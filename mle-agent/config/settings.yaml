@@ -1,0 +1,22 @@
+model:
+  server_url: "http://localhost:8000/v1"
+  local_model_path: ""        # REQUIRED — path to local GGUF file; app must error clearly if empty/missing
+  ctx_size: 8192
+  n_gpu_layers: 999
+
+budget:
+  actions_total: 100
+  time_total_minutes: 60.0
+
+selector:
+  plateau_n_rounds: 3
+  plateau_epsilon_relative: 0.005
+
+rag:
+  library_docs_path: "rag/library_docs_index"
+  technique_cheatsheet_path: "rag/technique_cheatsheet_index"
+  embedding_model: "BAAI/bge-m3"
+  source_docs_path: ""         # REQUIRED for build_index.py — local path, no download
+
+mle_dojo:
+  use_mock: true
