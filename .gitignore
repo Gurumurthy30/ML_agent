@@ -65,8 +65,8 @@ venv.bak/
 Thumbs.db
 
 # Agent execution state & benchmark output logs
-mle-agent/state/*
-!mle-agent/state/.gitkeep
-mle-agent/benchmark/results/*
-!mle-agent/benchmark/results/.gitkeep
+state/*
+!state/.gitkeep
+benchmark/results/*
+!benchmark/results/.gitkeep
 *.log
