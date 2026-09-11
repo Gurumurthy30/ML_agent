@@ -1,0 +1,722 @@
+[
+  {
+    "modality": "tabular",
+    "technique_name": "LightGBM Baseline",
+    "when_to_use": "Standard starting baseline for any tabular classification or regression problem with structured numerical/categorical columns.",
+    "tradeoffs": "Extremely fast training and low memory usage via histogram-based binning; slightly more prone to overfitting on tiny datasets (<1000 rows) compared to simple linear models or small Random Forests.",
+    "common_pitfalls": "Setting num_leaves too high causing rapid overfitting; not specifying categorical_feature for category columns.",
+    "related_techniques": ["XGBoost Baseline", "CatBoost Baseline", "Stratified K-Fold Cross-Validation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "XGBoost Baseline",
+    "when_to_use": "High-accuracy gradient boosting baseline, particularly strong when tuning max_depth and subsample/colsample_bytree.",
+    "tradeoffs": "Exact greedy split finding can be slower than LightGBM on large datasets unless tree_method='hist' is used.",
+    "common_pitfalls": "Default hyperparameters can overfit without early stopping or regularizing gamma, reg_alpha, and reg_lambda.",
+    "related_techniques": ["LightGBM Baseline", "CatBoost Baseline", "Rank-Average Blending"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "CatBoost Baseline",
+    "when_to_use": "Datasets with many high-cardinality categorical features or default hyperparameter settings where minimal tuning time is available.",
+    "tradeoffs": "Symmetric (oblivious) trees offer robust generalization and fast CPU inference, but training on high-dimensional sparse data can be slow.",
+    "common_pitfalls": "Forgetting to pass cat_features indices or strings; using one-hot encoding prior to CatBoost which negates its native target statistics handling.",
+    "related_techniques": ["Target Encoding (Out-of-Fold)", "LightGBM Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Target Encoding (Out-of-Fold)",
+    "when_to_use": "High-cardinality categorical columns (e.g. zip codes, city IDs, category codes) where one-hot encoding would blow up feature dimensionality.",
+    "tradeoffs": "Compresses high-cardinality categories into a single informative numeric feature; severe risk of target leakage if not strictly computed out-of-fold.",
+    "common_pitfalls": "Target leakage caused by calculating target statistics across the entire dataset before splitting CV folds. Must always use Out-of-Fold calculation and add smoothing/additive prior.",
+    "related_techniques": ["Frequency / Count Encoding", "CatBoost Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Numerical Interaction Features (Ratios and Products)",
+    "when_to_use": "Pairs of domain-related continuous measurements (e.g., debt/income, area/rooms, price/quantity).",
+    "tradeoffs": "Helps tree models capture non-linear relationships and interactions without needing deep trees; combinatorial explosion if applied blindly to all pairs.",
+    "common_pitfalls": "Division by zero resulting in Inf/NaN values without proper epsilon clipping or replacement.",
+    "related_techniques": ["Group-Level Aggregation Features", "Feature Selection (Permutation Importance / SHAP)"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Frequency / Count Encoding",
+    "when_to_use": "Medium-to-high cardinality categorical features where category frequency/rarity carries independent predictive signal.",
+    "tradeoffs": "Simple, robust, zero risk of target leakage; treats different rare categories with identical counts as equivalent.",
+    "common_pitfalls": "Overwriting the original category without keeping both the categorical ID and the frequency count.",
+    "related_techniques": ["Target Encoding (Out-of-Fold)", "Categorical Feature Handling"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Group-Level Aggregation Features",
+    "when_to_use": "Hierarchical or multi-entity tabular datasets where entities are nested inside groups (e.g., customer transactions within store ID).",
+    "tradeoffs": "Provides rich contextual statistics (mean, std, min, max, count) relative to peer group; introduces NaNs for single-member groups.",
+    "common_pitfalls": "Computing group aggregates on test sets separately from training sets, or leaking future temporal data in time-series settings.",
+    "related_techniques": ["Numerical Interaction Features", "Target Encoding (Out-of-Fold)"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Stratified K-Fold Cross-Validation",
+    "when_to_use": "Standard CV strategy for classification tasks to guarantee identical class label proportions across all folds.",
+    "tradeoffs": "Provides variance-reduced, unbiased out-of-fold validation scores; not applicable when samples are grouped or temporally ordered.",
+    "common_pitfalls": "Using standard unstratified KFold for imbalanced classification which leads to high fold score variance.",
+    "related_techniques": ["Group K-Fold Cross-Validation", "Time-Series Split"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Group K-Fold Cross-Validation",
+    "when_to_use": "Whenever multiple rows belong to the same underlying entity, patient, user, or device (indicated by a group_id column).",
+    "tradeoffs": "Prevents identity leakage across train and validation folds; fold sizes may be slightly unbalanced depending on group sizes.",
+    "common_pitfalls": "Splitting randomly across rows instead of groups, leading to severely over-optimistic CV scores that fail to generalize on the leaderboard.",
+    "related_techniques": ["Stratified K-Fold Cross-Validation", "Time-Series Split"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Time-Series Split (Purged / Rolling Window)",
+    "when_to_use": "Temporal data where predictions are required on future time steps (e.g. stock, demand forecasting).",
+    "tradeoffs": "Strictly prevents lookahead leakage; training folds have variable or reduced historical sample sizes.",
+    "common_pitfalls": "Randomly shuffling rows across time, which leaks future information into past predictions.",
+    "related_techniques": ["Group K-Fold Cross-Validation", "Stratified K-Fold Cross-Validation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Rank-Average Blending",
+    "when_to_use": "Ensembling predictions from multiple distinct model architectures (e.g. LightGBM + XGBoost + CatBoost) when evaluating ranking metrics (ROC-AUC, PR-AUC).",
+    "tradeoffs": "Immune to model probability calibration differences; cannot be used when exact calibrated probabilities or absolute loss metrics (log_loss, MSE) are required.",
+    "common_pitfalls": "Applying rank averaging when the competition evaluation metric is Log Loss or Root Mean Squared Error.",
+    "related_techniques": ["Weighted Probability Blending", "Out-of-Fold Stacking Ensemble"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Out-of-Fold (OOF) Stacking Ensemble",
+    "when_to_use": "Combining predictions of several strong base models using a meta-learner (e.g. Ridge / Logistic Regression / small LightGBM).",
+    "tradeoffs": "Usually achieves higher performance than any single model; increases pipeline complexity and inference latency.",
+    "common_pitfalls": "Training meta-models on train-set predictions instead of strictly out-of-fold cross-validated predictions, leading to massive second-stage leakage.",
+    "related_techniques": ["Rank-Average Blending", "Weighted Probability Blending"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Weighted Probability Blending",
+    "when_to_use": "Ensembling probabilities or regression outputs where weights are optimized via Nelder-Mead or grid search on out-of-fold predictions.",
+    "tradeoffs": "Simple, highly effective, interpretable model contributions; requires well-calibrated predictions from each component model.",
+    "common_pitfalls": "Optimizing blend weights on the test set instead of strictly cross-validated OOF predictions.",
+    "related_techniques": ["Rank-Average Blending", "Out-of-Fold Stacking Ensemble"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Missing Value Imputation Strategy",
+    "when_to_use": "Handling NaNs appropriately depending on model family: native handling for GBDTs, explicit median/indicator for linear models.",
+    "tradeoffs": "Native GBDT handling preserves missingness as an informative split direction; linear models crash on NaNs.",
+    "common_pitfalls": "Reflexively replacing NaNs with 0 or mean before GBDT training, which removes the tree's ability to branch on NaN status.",
+    "related_techniques": ["LightGBM Baseline", "Categorical Feature Handling"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Categorical Feature Handling (Native vs One-Hot)",
+    "when_to_use": "Selecting categorical representation based on cardinality and model family.",
+    "tradeoffs": "Native category dtype in LightGBM/CatBoost avoids memory explosion; one-hot encoding is only suitable for low-cardinality categoricals (<10 unique values) in linear models.",
+    "common_pitfalls": "One-hot encoding columns with thousands of levels, consuming excessive RAM and causing GBDT split fragmentation.",
+    "related_techniques": ["Target Encoding (Out-of-Fold)", "Frequency / Count Encoding"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Feature Selection via Permutation Importance / SHAP",
+    "when_to_use": "Pruning noisy, redundant, or uninformative features after generating extensive interaction candidates.",
+    "tradeoffs": "Reduces overfitting and speeds up training; computing SHAP values or permutation tests on large datasets can be computationally intensive.",
+    "common_pitfalls": "Using default GBDT feature_importances_ (split gain), which heavily biases toward high-cardinality continuous features.",
+    "related_techniques": ["Numerical Interaction Features", "Tree Regularization"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Tree Regularization (min_child_samples, reg_alpha, reg_lambda)",
+    "when_to_use": "Whenever cross-validation score diverges significantly from training score (overfitting).",
+    "tradeoffs": "Increases bias slightly while substantially decreasing prediction variance across folds.",
+    "common_pitfalls": "Tuning learning rate without simultaneously tuning n_estimators and early_stopping_rounds.",
+    "related_techniques": ["LightGBM Baseline", "XGBoost Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Continuous Feature Binning / Discretization",
+    "when_to_use": "Variables with heavy non-linear step functions (e.g. age brackets, tax brackets).",
+    "tradeoffs": "Transforms continuous data into categorical buckets; loses granular rank ordering within bins.",
+    "common_pitfalls": "Choosing arbitrary bin edges instead of quantiles (pd.qcut) or domain-informed boundaries.",
+    "related_techniques": ["Numerical Interaction Features", "Target Encoding (Out-of-Fold)"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Cyclic Encoding for Temporal Features (Sin/Cos)",
+    "when_to_use": "Cyclical periodic features such as hour of day (0-23), day of week (0-6), or month (1-12).",
+    "tradeoffs": "Preserves circular distance (e.g. 23:00 is adjacent to 00:00); generates two correlated features per original column.",
+    "common_pitfalls": "Treating cyclical values as pure linear continuous features without cyclic projection.",
+    "related_techniques": ["Time-Series Split", "Numerical Interaction Features"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "tabular",
+    "technique_name": "Target Transformation (Log1p / Box-Cox)",
+    "when_to_use": "Regression targets with extreme right skewness (e.g. monetary values, house prices, counts).",
+    "tradeoffs": "Makes residuals normally distributed and stabilizes error variance; predictions must be explicitly inversed via expm1 before scoring.",
+    "common_pitfalls": "Forgetting to apply np.expm1 on test predictions before saving submission.csv.",
+    "related_techniques": ["LightGBM Baseline", "Tree Regularization"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Pretrained Backbone Transfer Learning (timm)",
+    "when_to_use": "Foundational baseline for image classification/regression tasks using established backbones (e.g. convnext_small, efficientnet_b2, resnet50).",
+    "tradeoffs": "Leverages ImageNet pretraining weights for rapid convergence with few data; high GPU memory usage for large backbones.",
+    "common_pitfalls": "Hardcoding input image size to 224x224 when specific backbones expect different resolutions in timm default_cfg.",
+    "related_techniques": ["Albumentations Standard Augmentation", "Test-Time Augmentation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Albumentations Standard Augmentation Pipeline",
+    "when_to_use": "Regularizing vision models and increasing effective sample size on all image training sets.",
+    "tradeoffs": "Prevents memorization of spatial artifacts; aggressive augmentation can corrupt fine-grained visual labels.",
+    "common_pitfalls": "Applying non-deterministic augmentations (e.g. flips, crops) to validation/test sets instead of strictly train folds.",
+    "related_techniques": ["CutMix and Mixup Augmentation", "Test-Time Augmentation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "CutMix and Mixup Data Augmentation",
+    "when_to_use": "Training deep vision architectures on medium-to-large datasets to improve out-of-distribution robustness and calibration.",
+    "tradeoffs": "Significantly smooths decision boundaries and prevents overconfidence; requires soft target cross-entropy loss.",
+    "common_pitfalls": "Applying Mixup to one-hot hard labels without computing linear combination of loss across both target classes.",
+    "related_techniques": ["Albumentations Standard Augmentation Pipeline", "Label Smoothing"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Test-Time Augmentation (TTA)",
+    "when_to_use": "Inference-stage ensemble boosting by averaging predictions of original image and slightly augmented views (horizontal flip, multi-scale).",
+    "tradeoffs": "Consistently yields 0.3%-1% metric improvement with zero retraining; multiplies inference time by number of TTA passes.",
+    "common_pitfalls": "Using non-invariant augmentations during TTA (e.g. vertical flips on tasks with gravity-aligned objects like cars/buildings).",
+    "related_techniques": ["Pretrained Backbone Transfer Learning", "Multi-Crop Evaluation Ensemble"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Image Resolution & Aspect-Ratio Preservation",
+    "when_to_use": "Datasets where raw images have non-square aspect ratios or high-resolution details.",
+    "tradeoffs": "Resize with padding (letterbox) preserves aspect ratio without distortion; naive squishing distorts visual features.",
+    "common_pitfalls": "Squishing non-square images into a square matrix, distorting shapes of objects critical for classification.",
+    "related_techniques": ["Pretrained Backbone Transfer Learning", "Progressive Resizing"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Weighted Random Sampler for Class Imbalance",
+    "when_to_use": "Severe class imbalance in CV classification tasks where minority classes appear infrequently.",
+    "tradeoffs": "Ensures mini-batches have balanced representation of rare classes; frequent sampling of minority instances can overfit rare examples.",
+    "common_pitfalls": "Using replacement=False on WeightedRandomSampler when drawing more samples than the minority class count.",
+    "related_techniques": ["Focal Loss for Extreme Class Imbalance", "Stratified K-Fold Cross-Validation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Learning Rate Warmup and Cosine Annealing",
+    "when_to_use": "Fine-tuning pretrained vision backbones to avoid disrupting pretrained weights in early epochs.",
+    "tradeoffs": "Smooth convergence and superior final minima; requires configuring total epoch count in scheduler beforehand.",
+    "common_pitfalls": "Stepping the scheduler per epoch instead of per optimizer step when using cosine with warmup.",
+    "related_techniques": ["Layer-wise Discriminative Learning Rates", "AdamW Optimizer Configuration"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Layer-wise Discriminative Learning Rates",
+    "when_to_use": "Fine-tuning deep pretrained backbones: applying smaller LR to early feature extractors and higher LR to newly initialized classification heads.",
+    "tradeoffs": "Preserves general low-level vision filters while adapting high-level heads quickly; requires parameter grouping in optimizer.",
+    "common_pitfalls": "Applying high learning rates to early layers, destroying pretrained ImageNet weights in the first few iterations.",
+    "related_techniques": ["Learning Rate Warmup and Cosine Annealing", "Pretrained Backbone Transfer Learning"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Feature Extraction vs Full Fine-Tuning",
+    "when_to_use": "Resource-constrained environments or tiny datasets (<500 images) where full backpropagation would rapidly overfit.",
+    "tradeoffs": "Freezing backbone saves VRAM and trains in seconds; full fine-tuning achieves higher ceiling when compute permits.",
+    "common_pitfalls": "Keeping BatchNorm in training mode when backbone weights are frozen, corrupting running statistics.",
+    "related_techniques": ["Pretrained Backbone Transfer Learning", "Gradient Accumulation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Multi-Crop Evaluation Ensemble",
+    "when_to_use": "High-accuracy evaluation on complex scenes by cropping corners and center (FiveCrop/TenCrop).",
+    "tradeoffs": "Boosts robustness against localized spatial cues; increases validation runtime 5x-10x.",
+    "common_pitfalls": "Not reshaping batch dimensions correctly before passing multi-crop batches through the model.",
+    "related_techniques": ["Test-Time Augmentation", "Pretrained Backbone Transfer Learning"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Pseudo-Labeling on Unlabeled Test Data",
+    "when_to_use": "Semi-supervised boosting when a large test set is available and model predictions exhibit high confidence (>0.95).",
+    "tradeoffs": "Expands training distribution; risk of confirmation bias if incorrect high-confidence predictions are reinforced.",
+    "common_pitfalls": "Including low-confidence pseudo-labels which pollutes training data with false supervision.",
+    "related_techniques": ["Pretrained Backbone Transfer Learning", "Model Ensembling Across Diverse Backbones"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Model Ensembling Across Diverse Backbones (ConvNet + ViT)",
+    "when_to_use": "Final model submission combining CNN-based architectures (e.g. ConvNeXt) with self-attention architectures (e.g. Swin / EVA-02).",
+    "tradeoffs": "Different inductive biases yield orthogonal error distributions and maximal ensemble gain; requires training multiple models.",
+    "common_pitfalls": "Ensembling near-identical architectures (e.g. ResNet50 and ResNet101) which yields minimal diversity gain.",
+    "related_techniques": ["Weighted Probability Blending", "Test-Time Augmentation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Grouped Image Cross-Validation (Subject/Scene Level)",
+    "when_to_use": "Image datasets containing multiple captures of the same physical entity (patient X-rays, drone passes over same field).",
+    "tradeoffs": "Essential for realistic validation; failure to do this causes catastrophic leaderboard drop.",
+    "common_pitfalls": "Splitting images at the row level when a patient_id column exists, allowing the network to memorize patient appearance.",
+    "related_techniques": ["Group K-Fold Cross-Validation", "Stratified K-Fold Cross-Validation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Label Smoothing for Vision Classification",
+    "when_to_use": "Preventing overconfidence and calibrating probabilities on noisy or ambiguous image labels.",
+    "tradeoffs": "Improves generalization and downstream ensemble calibration; slight reduction in peak training accuracy.",
+    "common_pitfalls": "Setting smoothing parameter too high (>0.2), which degrades class discriminability.",
+    "related_techniques": ["CutMix and Mixup Data Augmentation", "Focal Loss for Extreme Class Imbalance"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Gradient Accumulation for Large Batch Sizes",
+    "when_to_use": "Training memory-heavy vision models on limited GPU VRAM where batch_size=32 would cause Out-Of-Memory (OOM).",
+    "tradeoffs": "Simulates arbitrarily large effective batch sizes with zero additional VRAM; slightly slower execution than pure GPU parallelism.",
+    "common_pitfalls": "Forgetting to zero gradients after every N accumulation steps or dividing loss incorrectly.",
+    "related_techniques": ["Automatic Mixed Precision (AMP fp16/bf16)", "Pretrained Backbone Transfer Learning"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Automatic Mixed Precision (AMP fp16/bf16)",
+    "when_to_use": "Standard acceleration on modern NVIDIA GPUs for 2x-3x faster training and 50% lower VRAM usage.",
+    "tradeoffs": "Minimal to zero loss in numerical precision; requires GradScaler for fp16 to prevent gradient underflow.",
+    "common_pitfalls": "Not wrapping the forward pass inside torch.autocast and omitting scaler.step(optimizer).",
+    "related_techniques": ["Gradient Accumulation", "Pretrained Backbone Transfer Learning"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Stochastic Weight Averaging (SWA)",
+    "when_to_use": "Averaging weights along the trajectory of SGD/Adam at the end of training to find wider, flatter minima.",
+    "tradeoffs": "Improves generalization with zero extra inference cost; requires updating BatchNorm statistics before evaluation.",
+    "common_pitfalls": "Evaluating the SWA model without calling torch.optim.swa_utils.update_bn on training data.",
+    "related_techniques": ["Learning Rate Warmup and Cosine Annealing", "Pretrained Backbone Transfer Learning"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Multi-Label Classification Head with BCEWithLogitsLoss",
+    "when_to_use": "Computer vision tasks where each image can possess zero, one, or multiple simultaneous tags/attributes.",
+    "tradeoffs": "Independent sigmoid activations per class; requires per-class decision threshold tuning instead of argmax.",
+    "common_pitfalls": "Using CrossEntropyLoss (Softmax) on multi-label tasks, which forces probabilities to sum to 1.0.",
+    "related_techniques": ["Pretrained Backbone Transfer Learning", "Focal Loss for Extreme Class Imbalance"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Focal Loss for Extreme Class Imbalance",
+    "when_to_use": "Imbalanced object or anomaly detection where easy negative background examples dominate the gradient.",
+    "tradeoffs": "Focuses gradient updates on hard, ambiguous examples; adds hyperparameter gamma to tune.",
+    "common_pitfalls": "Applying high gamma on datasets with label noise, causing the model to overfit mislabeled errors.",
+    "related_techniques": ["Weighted Random Sampler", "Label Smoothing"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "cv",
+    "technique_name": "Progressive Resizing / Multi-Scale Training",
+    "when_to_use": "Training initial epochs at smaller resolutions (e.g. 160x160) then fine-tuning on higher resolution (e.g. 256x256 or 384x384).",
+    "tradeoffs": "Saves 60% of total training time while boosting high-resolution accuracy; requires rebuilding dataloader transforms.",
+    "common_pitfalls": "Not resetting or adjusting the learning rate when stepping up resolution.",
+    "related_techniques": ["Pretrained Backbone Transfer Learning", "Image Resolution & Aspect-Ratio Preservation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Pretrained Transformer Fine-Tuning (DeBERTa-v3 / RoBERTa)",
+    "when_to_use": "State-of-the-art starting baseline for text classification, sentiment, entailment, and regression.",
+    "tradeoffs": "Unmatched semantic comprehension; high compute cost and VRAM usage relative to GBDT/TF-IDF.",
+    "common_pitfalls": "Using standard BERT instead of DeBERTa-v3 or RoBERTa which consistently outperform original BERT.",
+    "related_techniques": ["Sequence Length Truncation Strategy", "Layer-wise Learning Rate Decay"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Sequence Length Truncation Strategy (Head-Tail vs Max Length)",
+    "when_to_use": "Long-form documents exceeding 512 tokens where standard truncation loses critical concluding information.",
+    "tradeoffs": "Concatenating first 256 and last 256 tokens retains introduction and conclusion; middle text is omitted.",
+    "common_pitfalls": "Default tail-truncation silently throwing away the conclusion or final score of an essay/review.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "Gradient Checkpointing"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Domain-Specific Pretrained Backbones",
+    "when_to_use": "Specialized texts (medical, biomedical, legal, financial, scientific code).",
+    "tradeoffs": "Pre-trained tokenizer already understands specialized terminology; slightly more limited checkpoint choices.",
+    "common_pitfalls": "Fine-tuning standard general English BERT on complex clinical or financial jargon without checking domain checkpoints.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "TF-IDF + GBDT Hybrid"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Out-of-Fold Cross-Validation for Text",
+    "when_to_use": "Ensuring leak-free validation and generating out-of-fold probability predictions for stacking/ensembling in NLP.",
+    "tradeoffs": "Requires training K full transformers; ensures reliable validation scores.",
+    "common_pitfalls": "Fitting tokenizers or vocabulary sets across all folds simultaneously instead of fold-safe.",
+    "related_techniques": ["Stratified K-Fold Cross-Validation", "Pretrained Transformer Fine-Tuning"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Mean / Attention Pooling Over Transformer Hidden States",
+    "when_to_use": "Extracting text representations across full sequences instead of relying exclusively on the [CLS] token vector.",
+    "tradeoffs": "Mean pooling over attention-masked tokens consistently outperforms [CLS] on sentence embedding and classification tasks.",
+    "common_pitfalls": "Taking torch.mean over padding tokens without applying attention_mask to zero out padded tokens.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "Sentence Embeddings"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Layer-wise Learning Rate Decay (LLRD)",
+    "when_to_use": "Fine-tuning deep transformers by scaling down learning rate by factor (e.g. 0.9) per layer from top to bottom.",
+    "tradeoffs": "Preserves core linguistic representations in early layers while aggressively adapting top task-specific heads.",
+    "common_pitfalls": "Applying a single uniform learning rate across all 12/24 layers which risks catastrophic forgetting.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "Multi-Sample Dropout"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Freezing Early Transformer Layers",
+    "when_to_use": "Fast iteration, small training budgets, or tiny datasets (<1000 examples) to prevent overfitting.",
+    "tradeoffs": "Reduces backpropagation compute time and VRAM by 40-60%; slightly lowers asymptotic performance ceiling.",
+    "common_pitfalls": "Leaving all parameters unfrozen when dataset is tiny (<500 examples), leading to immediate overfit.",
+    "related_techniques": ["Layer-wise Learning Rate Decay", "Pretrained Transformer Fine-Tuning"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Sentence Embeddings (SentenceTransformers) as Tabular Features",
+    "when_to_use": "Extracting dense semantic text embeddings (e.g. BAAI/bge-small-en or all-MiniLM-L6-v2) to pass into LightGBM alongside tabular columns.",
+    "tradeoffs": "Zero deep learning training required in main pipeline; fast inference; captures global semantics without transformer fine-tuning.",
+    "common_pitfalls": "Passing high-dimensional raw embeddings (1024-dim) into GBDT without dimensionality reduction or feature selection.",
+    "related_techniques": ["TF-IDF + GBDT Hybrid Text Baseline", "LightGBM Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "TF-IDF + GBDT Hybrid Text Baseline",
+    "when_to_use": "Quick, robust initial NLP baseline that runs in seconds on CPU and provides competitive feature baseline.",
+    "tradeoffs": "Fast, interpretable n-gram signals; lacks contextual sentence understanding compared to transformers.",
+    "common_pitfalls": "Setting max_features too high (>50,000) leading to sparse matrix memory overhead in tree training.",
+    "related_techniques": ["Sentence Embeddings", "LightGBM Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Multi-Sample Dropout for Regularization",
+    "when_to_use": "Replacing final dropout layer before linear classification head with multiple dropout masks and averaging their outputs.",
+    "tradeoffs": "Accelerates training convergence and acts as an internal ensemble regularizer with negligible compute overhead.",
+    "common_pitfalls": "Applying multi-sample dropout to hidden layers instead of the task classification head.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "Layer-wise Learning Rate Decay"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Class Imbalance in Text (Class-Weighted Loss & Focal Loss)",
+    "when_to_use": "Classification tasks where rare classes represent <5% of total corpus examples.",
+    "tradeoffs": "Forces loss optimization to prioritize difficult minority categories; can increase false positives on rare classes.",
+    "common_pitfalls": "Evaluating solely on Accuracy rather than Macro-F1 or Balanced Accuracy on imbalanced text.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "Stratified K-Fold Cross-Validation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Multi-Label Text Classification with Per-Class Thresholds",
+    "when_to_use": "Documents categorized under multiple non-mutually exclusive topic tags.",
+    "tradeoffs": "Optimizing individual class thresholds on validation OOF predictions yields 2-5% F1 gain over fixed 0.5 threshold.",
+    "common_pitfalls": "Defaulting to threshold=0.5 for all classes regardless of class prior frequency.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "Multi-Label Classification Head with BCEWithLogitsLoss"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Text Cleaning and Normalization",
+    "when_to_use": "Pre-processing raw user-generated text containing HTML entities, unicode artifacts, and inconsistent whitespace.",
+    "tradeoffs": "Standardizes tokenization inputs; destructive cleaning (e.g. stripping punctuation/casing) can destroy capitalization emphasis signal.",
+    "common_pitfalls": "Aggressively lowercasing text when using a cased transformer checkpoint (e.g. bert-base-cased).",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "TF-IDF + GBDT Hybrid Text Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Pseudo-Labeling with Semi-Supervised Learning in NLP",
+    "when_to_use": "Large unlabelled test set where confident predictions are added back into the training corpus for an extra epoch.",
+    "tradeoffs": "Adapts model to test domain vocabulary; sensitive to threshold selection.",
+    "common_pitfalls": "Re-training without warm starting or learning rate adjustment, causing instability.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "Model Ensembling Across Diverse Backbones"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Ensembling Diverse NLP Model Families",
+    "when_to_use": "Combining predictions from distinct transformer families (DeBERTa-v3 + RoBERTa + Electra).",
+    "tradeoffs": "High diversity boost on competition leaderboards; requires managing multiple tokenizer pipelines.",
+    "common_pitfalls": "Averaging raw uncalibrated logits across models instead of probabilities or rank-normalized scores.",
+    "related_techniques": ["Rank-Average Blending", "Weighted Probability Blending"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Gradient Checkpointing for Long Sequence Memory Optimization",
+    "when_to_use": "Enabling longer sequence lengths (e.g. 1024 or 2048) on limited GPU memory by recomputing activations during backward pass.",
+    "tradeoffs": "Reduces peak VRAM by up to 60%; increases training time by approximately 20%.",
+    "common_pitfalls": "Enabling checkpointing when batch size is already small enough to fit in VRAM, causing unnecessary slowdown.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "Sequence Length Truncation Strategy"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Weight Decay and AdamW Optimizer Configuration",
+    "when_to_use": "Standard optimizer for transformer fine-tuning with weight decay decoupled from L2 norm.",
+    "tradeoffs": "Crucial for preventing transformer overfit; requires excluding bias and LayerNorm parameters from weight decay.",
+    "common_pitfalls": "Applying weight decay to bias and LayerNorm.weight parameters.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "Layer-wise Learning Rate Decay"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Author/Document Group-Level Cross-Validation",
+    "when_to_use": "Datasets where multiple reviews, tweets, or sentences belong to the same author or source document.",
+    "tradeoffs": "Ensures model learns generalizable patterns rather than memorizing author writing style; reduces available training independence.",
+    "common_pitfalls": "Splitting randomly across sentences from the same paragraph or document, leading to severe test score drops.",
+    "related_techniques": ["Group K-Fold Cross-Validation", "Out-of-Fold Cross-Validation for Text"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Cross-Encoder Re-ranking for Pairwise Text Matching",
+    "when_to_use": "Tasks requiring similarity scoring, question-answering matching, or duplicate text detection.",
+    "tradeoffs": "Full cross-attention between text pairs yields highest possible matching accuracy; slower inference than bi-encoders.",
+    "common_pitfalls": "Encoding texts separately with a Bi-Encoder and computing cosine similarity when accuracy on complex relationships is required.",
+    "related_techniques": ["Sentence Embeddings", "Pretrained Transformer Fine-Tuning"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "nlp",
+    "technique_name": "Adversarial Training (FGM / AWP) for Robustness",
+    "when_to_use": "Adding small norm-bounded adversarial perturbations to word embeddings during backpropagation to improve generalization.",
+    "tradeoffs": "Consistently yields 0.3-0.8% CV improvement on competitive NLP tasks; increases training step duration by 2x.",
+    "common_pitfalls": "Setting perturbation epsilon too high, corrupting the semantic embedding space.",
+    "related_techniques": ["Pretrained Transformer Fine-Tuning", "Multi-Sample Dropout"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Log-Mel Spectrogram Conversion Baseline",
+    "when_to_use": "Converting raw 1D audio waveforms into 2D time-frequency representations for vision-like CNN processing.",
+    "tradeoffs": "Standard, robust representation aligned with human auditory perception; discards phase information.",
+    "common_pitfalls": "Omitting librosa.power_to_db (log scaling), leaving spectrograms in linear amplitude where signals are crushed.",
+    "related_techniques": ["Pretrained Audio Spectrogram Transformer", "CNN14 Audio Backbone"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Pretrained Audio Spectrogram Transformer (AST)",
+    "when_to_use": "State-of-the-art transfer learning for environmental audio and sound classification using self-attention over spectrogram patches.",
+    "tradeoffs": "High accuracy on standard audio benchmarks; computationally heavy during training.",
+    "common_pitfalls": "Extracting spectrograms with different hop_length or n_mels than AST's expected input dimensions.",
+    "related_techniques": ["CNN14 Audio Backbone", "Log-Mel Spectrogram Conversion Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "CNN14 / PANNs Pretrained Audio Backbone",
+    "when_to_use": "Fast, highly robust convolutional audio feature extractor pretrained on AudioSet.",
+    "tradeoffs": "Excellent generalization across wide sound categories; faster inference and lower VRAM than AST.",
+    "common_pitfalls": "Not normalizing audio sample rate to 32kHz (AudioSet standard) before passing to PANNs models.",
+    "related_techniques": ["Pretrained Audio Spectrogram Transformer", "Log-Mel Spectrogram Conversion Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "SpecAugment (Time and Frequency Masking)",
+    "when_to_use": "Zero-cost data augmentation directly on spectrograms by zeroing out random horizontal (frequency) and vertical (time) strips.",
+    "tradeoffs": "Forces the network to be invariant to partial frequency loss and temporal dropouts; essential for preventing spectrogram overfit.",
+    "common_pitfalls": "Masking too large a fraction of the time or frequency channels, removing the actual acoustic event.",
+    "related_techniques": ["Log-Mel Spectrogram Conversion Baseline", "Audio Mixup Augmentation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Fixed-Window Padding and Truncation",
+    "when_to_use": "Handling variable-length audio clips into uniform tensor shapes for batched GPU processing.",
+    "tradeoffs": "Enables vectorized mini-batching; random crop during training acts as data augmentation while center crop ensures deterministic validation.",
+    "common_pitfalls": "Zero-padding short clips at the end without repeating or looping, creating massive silent blocks.",
+    "related_techniques": ["Log-Mel Spectrogram Conversion Baseline", "Silence Removal and VAD"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Sample Rate Normalization and Resampling",
+    "when_to_use": "Pre-processing pipeline requirement: ensuring every audio file is resampled to a consistent target rate (e.g. 16kHz or 32kHz).",
+    "tradeoffs": "Critical for comparable feature extraction; high quality resampling (torchaudio.transforms.Resample) should happen once offline.",
+    "common_pitfalls": "Feeding mixed-sample-rate audio files into the same feature extractor, distorting frequency scales across examples.",
+    "related_techniques": ["Log-Mel Spectrogram Conversion Baseline", "Mel-Frequency Cepstral Coefficients"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Group K-Fold on Speaker / Environment ID",
+    "when_to_use": "Whenever multiple audio recordings come from the same speaker, microphone, or recording location.",
+    "tradeoffs": "Guarantees generalization to unseen speakers/rooms; without it, model memorizes background acoustics.",
+    "common_pitfalls": "Random row splitting which allows the model to achieve 99% CV by recognizing acoustic background hum.",
+    "related_techniques": ["Group K-Fold Cross-Validation", "Pretrained Audio Spectrogram Transformer"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Mel-Frequency Cepstral Coefficients (MFCC) Extraction",
+    "when_to_use": "Compact acoustic representation (13-40 coefficients) for speech recognition, speaker ID, or lightweight GBDT audio models.",
+    "tradeoffs": "Low dimensional, decorrelated features suitable for classical ML; discards fine-grained acoustic textures.",
+    "common_pitfalls": "Using standard MFCCs for environmental bird/animal sound classification where higher-order spectral details matter.",
+    "related_techniques": ["Log-Mel Spectrogram Conversion Baseline", "LightGBM Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Constant-Q Transform (CQT) for Musical Audio",
+    "when_to_use": "Musical instrument recognition and pitch detection where frequency bins should be geometrically spaced per musical octave.",
+    "tradeoffs": "Matches musical pitch intervals; computationally slower than standard Fast Fourier Transform (FFT).",
+    "common_pitfalls": "Using standard linear STFT for polyphonic music tasks where octave relationships are logarithmic.",
+    "related_techniques": ["Log-Mel Spectrogram Conversion Baseline", "Mel-Frequency Cepstral Coefficients"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Per-Channel Energy Normalization (PCEN)",
+    "when_to_use": "Noisy bioacoustic environments (e.g. rainforest, outdoor sensors) with dynamic background noise floors.",
+    "tradeoffs": "Performs temporal automatic gain control and dynamic range compression; superior to log-mel in changing acoustic noise.",
+    "common_pitfalls": "Tuning PCEN parameters without validating on out-of-fold validation set.",
+    "related_techniques": ["Log-Mel Spectrogram Conversion Baseline", "Silence Removal and VAD"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Audio Time-Shift and Pitch-Shift Augmentation",
+    "when_to_use": "Raw waveform augmentation to introduce variance in temporal position and slight acoustic pitch.",
+    "tradeoffs": "Increases model invariance to pitch variance and onset timing; excessive pitch shift can alter species/voice identity.",
+    "common_pitfalls": "Applying large pitch shifts on pitch-critical audio tasks (e.g. musical pitch classification).",
+    "related_techniques": ["SpecAugment", "Audio Mixup Augmentation"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Additive Background Noise Augmentation",
+    "when_to_use": "Injecting white/pink noise or ambient acoustic tracks at varying SNR (Signal-to-Noise Ratios).",
+    "tradeoffs": "Substantially improves model robustness to real-world noisy test sets; can overpower subtle audio signals if SNR is too low.",
+    "common_pitfalls": "Adding noise with high amplitude that completely masks faint target acoustic signals.",
+    "related_techniques": ["SpecAugment", "Per-Channel Energy Normalization"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Multi-Channel Downmixing (Stereo to Mono)",
+    "when_to_use": "Input preprocessing when dataset contains inconsistent audio channels (mixture of 1-channel mono and 2-channel stereo).",
+    "tradeoffs": "Standardizes tensor input to single channel; simple average across channels (torch.mean(audio, dim=0, keepdim=True)).",
+    "common_pitfalls": "Passing multi-channel audio directly into mono-expecting spectrogram extractors without downmixing first.",
+    "related_techniques": ["Sample Rate Normalization and Resampling", "Log-Mel Spectrogram Conversion Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Audio Ensembling (AST + CNN14 Average Predictions)",
+    "when_to_use": "Combining attention-based Audio Spectrogram Transformer with convolutional CNN14 predictions.",
+    "tradeoffs": "Combines global attention with localized convolutional pattern recognition; yields significant leaderboard boost.",
+    "common_pitfalls": "Averaging raw unnormalized logits from different architectures instead of applying sigmoid/softmax probabilities first.",
+    "related_techniques": ["Rank-Average Blending", "Weighted Probability Blending"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Class Imbalance in Audio Events (Threshold Tuning & Pos-Weight)",
+    "when_to_use": "Rare acoustic event detection where target sounds occur in <2% of recordings.",
+    "tradeoffs": "Setting pos_weight in BCEWithLogitsLoss penalizes missed acoustic events; requires post-processing threshold tuning.",
+    "common_pitfalls": "Using default 0.5 probability threshold for rare sound events.",
+    "related_techniques": ["Multi-Label Audio Classification", "Pretrained Audio Spectrogram Transformer"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Audio Mixup Augmentation on Waveforms and Spectrograms",
+    "when_to_use": "Acoustic modeling where linear superposition of sound waves reflects physical reality.",
+    "tradeoffs": "Physically realistic data augmentation for audio; requires training with linear combination of soft labels.",
+    "common_pitfalls": "Applying mixup without updating the multi-label target vectors proportionally.",
+    "related_techniques": ["SpecAugment", "Pretrained Audio Spectrogram Transformer"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Weakly Supervised Audio Tagging with Attention Pooling",
+    "when_to_use": "Recordings labeled at clip level without timestamp annotations of where the sound event occurs.",
+    "tradeoffs": "Learns to focus on salient temporal acoustic frames and aggregates predictions across time; superior to mean/max pooling.",
+    "common_pitfalls": "Using simple average pooling across long 60-second clips, which dilutes a 1-second sound event to zero.",
+    "related_techniques": ["CNN14 Audio Backbone", "Pretrained Audio Spectrogram Transformer"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Waveform-Level End-to-End Models (wav2vec 2.0 / Whisper)",
+    "when_to_use": "Speech recognition, speaker transcription, or linguistic audio classification tasks.",
+    "tradeoffs": "Processes raw 1D audio directly without handcrafted spectrograms; large model footprints and VRAM requirements.",
+    "common_pitfalls": "Fine-tuning Whisper/wav2vec on non-speech acoustic audio (e.g. engine noise) where spectrogram models perform better.",
+    "related_techniques": ["Pretrained Audio Spectrogram Transformer", "Sample Rate Normalization and Resampling"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Silence Removal and Voice Activity Detection (VAD)",
+    "when_to_use": "Audio recordings with prolonged dead silence before or after the event of interest.",
+    "tradeoffs": "Eliminates uninformative quiet periods; prevents wasting model capacity on ambient room silence.",
+    "common_pitfalls": "Setting energy threshold too high and trimming out the soft tail or onset of quiet sounds.",
+    "related_techniques": ["Fixed-Window Padding and Truncation", "Log-Mel Spectrogram Conversion Baseline"],
+    "confidence": "seed_draft"
+  },
+  {
+    "modality": "audio",
+    "technique_name": "Test-Time Augmentation on Audio (Time-Shift & Multi-Window TTA)",
+    "when_to_use": "Inference-time ensemble on audio by averaging predictions from multiple overlapping sliding windows.",
+    "tradeoffs": "Reduces edge boundary cutoff errors during evaluation; increases inference time linearly with window count.",
+    "common_pitfalls": "Averaging sliding window predictions on variable-length audio without weighting by window coverage.",
+    "related_techniques": ["Test-Time Augmentation", "Audio Ensembling"],
+    "confidence": "seed_draft"
+  }
+]

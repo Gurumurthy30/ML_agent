@@ -70,3 +70,9 @@ state/*
 benchmark/results/*
 !benchmark/results/.gitkeep
 *.log
+
+# environment variables
+.env
+
+# Node.js
+node_modules/

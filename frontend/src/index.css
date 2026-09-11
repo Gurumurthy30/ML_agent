@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-shell text-primary font-sans antialiased selection:bg-accent/30 selection:text-primary;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
+  }
+
+  /* Custom scrollbar matching dark warm aesthetic */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #3A3936;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #4A4844;
+  }
+}
+
+/* Claude-style inline code highlights */
+.inline-code {
+  @apply font-mono text-accent bg-[#181716]/80 border border-border/40 px-1.5 py-0.5 rounded text-[13px];
+}
+
+/* Markdown prose rendering */
+.chat-prose {
+  @apply text-primary text-[15px] leading-[1.6];
+}
+.chat-prose p {
+  @apply mb-3.5 last:mb-0;
+}
+.chat-prose h1, .chat-prose h2, .chat-prose h3, .chat-prose h4 {
+  @apply font-semibold text-primary mt-4 mb-2 tracking-tight;
+}
+.chat-prose h2 {
+  @apply text-[17px];
+}
+.chat-prose h3 {
+  @apply text-[15.5px];
+}
+.chat-prose ul {
+  @apply list-disc list-outside ml-5 mb-3.5 space-y-1.5 text-primary;
+}
+.chat-prose ol {
+  @apply list-decimal list-outside ml-5 mb-3.5 space-y-1.5 text-primary;
+}
+.chat-prose strong {
+  @apply font-semibold text-[#FFFFFF];
+}
+
+/* Collapsible smooth height animations */
+.collapsible-content {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.collapsible-content.expanded {
+  grid-template-rows: 1fr;
+}
+.collapsible-inner {
+  overflow: hidden;
+}
+
+/* Terminal card horizontal scroll styling */
+.terminal-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #3A3936 transparent;
+}
