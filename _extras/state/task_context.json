@@ -1,0 +1,112 @@
+{
+  "task_id": "local_tabular_task_01",
+  "task_name": "Local TABULAR Optimization Task",
+  "modality": "tabular",
+  "target_column": "target",
+  "metric": "roc_auc",
+  "train_shape": [
+    1000,
+    15
+  ],
+  "test_shape": [
+    250,
+    14
+  ],
+  "eda_summary": {
+    "missing_values_flag": true,
+    "class_imbalance_flag": false,
+    "potential_leakage_notes": "None detected via correlation check.",
+    "column_stats": {
+      "feature_1": {
+        "mean": 49.4662,
+        "median": 49.9712,
+        "std": 14.8693,
+        "nan_count": 51,
+        "nan_pct": 5.1,
+        "outlier_count_iqr": 9
+      },
+      "feature_2": {
+        "mean": 97.5586,
+        "median": 98.6865,
+        "std": 30.4362,
+        "nan_count": 0,
+        "nan_pct": 0.0,
+        "outlier_count_iqr": 10
+      },
+      "feature_3": {
+        "mean": 1.938,
+        "median": 2.0,
+        "std": 1.4036,
+        "nan_count": 0,
+        "nan_pct": 0.0,
+        "outlier_count_iqr": 1
+      },
+      "target": {
+        "mean": 0.244,
+        "median": 0.0,
+        "std": 0.4297,
+        "nan_count": 0,
+        "nan_pct": 0.0,
+        "outlier_count_iqr": null
+      }
+    },
+    "class_balance": {
+      "value_counts": {
+        "0": 756,
+        "1": 244
+      },
+      "proportions": {
+        "0": 0.756,
+        "1": 0.244
+      },
+      "is_imbalanced": false
+    },
+    "target_correlations": [
+      {
+        "feature": "feature_2",
+        "corr": -0.0315
+      },
+      {
+        "feature": "feature_1",
+        "corr": 0.0097
+      },
+      {
+        "feature": "feature_3",
+        "corr": 0.0002
+      }
+    ],
+    "categorical_cardinality": {
+      "id": 1000,
+      "category_A": 3,
+      "category_B": 2
+    },
+    "anova_stats": [
+      {
+        "feature": "feature_2",
+        "f_statistic": 0.4776,
+        "p_value": 0.4897
+      },
+      {
+        "feature": "feature_1",
+        "f_statistic": 0.0895,
+        "p_value": 0.76493
+      },
+      {
+        "feature": "feature_3",
+        "f_statistic": 0.0252,
+        "p_value": 0.87393
+      }
+    ],
+    "skewness": {
+      "feature_1": -0.0568,
+      "feature_2": -0.048,
+      "feature_3": 0.7219,
+      "target": 1.1939
+    }
+  },
+  "eda_prompt_summary": "## COMPREHENSIVE END-TO-END DATASET EXPLORATION & STATISTICAL PROFILE\n- **Task ID / Name**: local_tabular_task_01 \u2014 Local TABULAR Optimization Task\n- **Modality**: TABULAR\n- **Target Column**: `target`\n- **Primary Metric**: `roc_auc`\n- **Train Shape**: 1000 rows, 15 columns\n- **Test Shape**: 250 rows, 14 columns\n- **Class Imbalance Flag**: False\n- **Missing Values Flag**: True\n- **Data Leakage Risk Notes**: None detected via correlation check.\n\n### Class Balance & Target Distribution\n  - Class `0`: 756 samples (75.60%)\n  - Class `1`: 244 samples (24.40%)\n\n### Tabular Feature Statistics & Data Quality\n  - `feature_1`: Mean=49.4662, Median=49.9712, Std=14.8693, Nulls=51 (5.1%), IQR Outliers: 9\n  - `feature_2`: Mean=97.5586, Median=98.6865, Std=30.4362, Nulls=0 (0.0%), IQR Outliers: 10\n  - `feature_3`: Mean=1.938, Median=2.0, Std=1.4036, Nulls=0 (0.0%), IQR Outliers: 1\n  - `target`: Mean=0.244, Median=0.0, Std=0.4297, Nulls=0 (0.0%)\n\n### Top Target Feature Correlations\n  - `feature_2`: Pearson r = -0.0315\n  - `feature_1`: Pearson r = 0.0097\n  - `feature_3`: Pearson r = 0.0002\n\n### ANOVA Statistical Significance (Top Features)\n  - `feature_2`: F-stat = 0.4776, p-value = 0.4897\n  - `feature_1`: F-stat = 0.0895, p-value = 0.76493\n  - `feature_3`: F-stat = 0.0252, p-value = 0.87393\n\n### Categorical Cardinality\n  - `id`: 1000 unique categories\n  - `category_A`: 3 unique categories\n  - `category_B`: 2 unique categories",
+  "sample_submission_format": {
+    "id_column": "id",
+    "pred_column": "target"
+  }
+}

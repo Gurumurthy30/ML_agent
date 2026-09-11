@@ -115,7 +115,10 @@ End every round with exactly one fenced JSON block matching this schema, and not
   "reasoning_mode": "default | tot",
   "approach_rationale": "free text — why this, why now",
   "feature_engineering_notes": "free text",
-  "hyperparameter_ranges": {"...": "..."}
+  "hyperparameter_ranges": {"...": "..."},
+  "primary_metric": "string (e.g. roc_auc, macro_f1, rmse, mae)",
+  "primary_metric_direction": "maximize | minimize",
+  "metrics_to_track": ["metric1", "metric2", "metric3"]
 }
 ```
 

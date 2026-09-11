@@ -7,6 +7,11 @@ Usage:
   python main.py --headless   # run a single headless session (no UI, console output only)
 """
 
+try:
+    import anyio.abc
+except Exception:
+    pass
+
 import os
 import sys
 from pathlib import Path
@@ -15,12 +20,13 @@ from dotenv import load_dotenv
 load_dotenv()  # picks up .env in the repo root
 
 
-def _check_model_access(settings) -> None:
+def _check_model_access(settings, dry_run: bool = False) -> None:
     """
     Validates availability of API keys across registered Multi-API Providers:
     - Deep-Thinking: NVIDIA NIM (NVIDIA_API_KEY)
     - Primary:       Groq (GROQ_API_KEY)
     - Fallback:      Google Gemini (GOOGLE_API_KEY)
+    And executes lightweight health check when not in dry-run mode.
     """
     found_keys = []
     for provider in [
@@ -39,6 +45,10 @@ def _check_model_access(settings) -> None:
         )
     else:
         print(f"[Config] Active provider keys: {', '.join(found_keys)}")
+
+    if not dry_run:
+        from agents.utils import check_all_providers_health
+        check_all_providers_health(force=True)
 
 
 def _langsmith_status() -> str:
@@ -64,7 +74,7 @@ def main():
     print("   ML Agent v2 — Chat-Native + MCP + Multi-Provider")
     print("==================================================")
     print(f"[Config] LangSmith tracing: {_langsmith_status()}")
-    _check_model_access(settings)
+    _check_model_access(settings, dry_run=dry_run)
 
     if headless:
         # Headless: run a single fake session for smoke-testing
@@ -82,11 +92,24 @@ def main():
                 "target_confidence": "name_matched",
                 "task_type": "binary_classification",
                 "metric": "roc_auc",
+                "metric_direction": "maximize",
+                "metrics_to_track": ["roc_auc", "f1", "accuracy"],
                 "column_names": ["id", "feature_1", "feature_2", "target"],
                 "session_data_dir": str(Path("state/sessions/headless_test/data").resolve()),
                 "task_id": "headless_test",
                 "task_name": "Headless Test Task",
                 "sample_submission_format": {"id_column": "id", "pred_column": "target"},
+            },
+            "session_context": {
+                "modality": "tabular",
+                "target_column": "target",
+                "target_confidence": "name_matched",
+                "task_type": "binary_classification",
+                "metric": "roc_auc",
+                "metric_direction": "maximize",
+                "metrics_to_track": ["roc_auc", "f1", "accuracy"],
+                "column_names": ["id", "feature_1", "feature_2", "target"],
+                "session_data_dir": str(Path("state/sessions/headless_test/data").resolve()),
             },
             "target_confidence": "name_matched",
             "current_spec": None,
@@ -100,7 +123,7 @@ def main():
             "pending_human_question": None,
             "human_answer": None,
             "event_queue": [],
-            "dry_run": dry_run or True,  # headless always dry-runs
+            "dry_run": dry_run,
         }
 
         Path("state/sessions/headless_test/data").mkdir(parents=True, exist_ok=True)

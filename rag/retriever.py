@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional
 
 from config.settings import get_settings
 
+from functools import lru_cache
+
 try:
     import chromadb
     from chromadb.utils import embedding_functions
@@ -33,9 +35,12 @@ try:
 except ImportError:
     HAS_CHROMADB = False
 
+_CLIENT_CACHE = {}
 
+
+@lru_cache(maxsize=4)
 def _get_embedding_function(model_name: str):
-    """Initializes sentence-transformers embedding function with fallback."""
+    """Initializes sentence-transformers embedding function with fallback (cached)."""
     if not HAS_CHROMADB:
         return None
     try:
@@ -48,6 +53,12 @@ def _get_embedding_function(model_name: str):
             model_name="sentence-transformers/all-MiniLM-L6-v2",
             device="cpu",
         )
+
+
+def _get_chroma_client(path: str):
+    if path not in _CLIENT_CACHE:
+        _CLIENT_CACHE[path] = chromadb.PersistentClient(path=path)
+    return _CLIENT_CACHE[path]
 
 
 _FALLBACK_LIBRARY_DOCS = [
@@ -77,19 +88,22 @@ _FALLBACK_CHEATSHEET = [
 ]
 
 
-def query_library_docs(query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+def query_library_docs(query: str, top_k: int = 3, dry_run: bool = False) -> List[Dict[str, Any]]:
     """
     Queries the library_docs_index Chroma collection.
     Returns top_k results as dicts: [{"content": str, "metadata": dict}, ...]
     Gracefully falls back if Chroma is missing, unindexed, or empty.
     """
+    if dry_run or os.environ.get("DRY_RUN", "").lower() == "true":
+        return _FALLBACK_LIBRARY_DOCS[:top_k]
+
     settings = get_settings()
     path = str(Path(settings.rag.library_docs_path).resolve())
 
     if HAS_CHROMADB and os.path.exists(path):
         try:
             emb_fn = _get_embedding_function(settings.rag.embedding_model)
-            client = chromadb.PersistentClient(path=path)
+            client = _get_chroma_client(path)
             col = client.get_collection(name="library_docs_index", embedding_function=emb_fn)
             count = col.count()
 
@@ -108,20 +122,27 @@ def query_library_docs(query: str, top_k: int = 3) -> List[Dict[str, Any]]:
 
 
 def query_technique_cheatsheet(
-    query: str, modality: Optional[str] = None, top_k: int = 3
+    query: str, modality: Optional[str] = None, top_k: int = 3, dry_run: bool = False
 ) -> List[Dict[str, Any]]:
     """
     Queries the technique_cheatsheet_index Chroma collection, optionally filtered by modality.
     Returns top_k results as dicts: [{"content": str, "metadata": dict}, ...]
     Gracefully falls back if Chroma is missing, unindexed, or empty.
     """
+    if dry_run or os.environ.get("DRY_RUN", "").lower() == "true":
+        if modality:
+            filtered = [f for f in _FALLBACK_CHEATSHEET if f.get("metadata", {}).get("modality") == modality]
+            if filtered:
+                return filtered[:top_k]
+        return _FALLBACK_CHEATSHEET[:top_k]
+
     settings = get_settings()
     path = str(Path(settings.rag.technique_cheatsheet_path).resolve())
 
     if HAS_CHROMADB and os.path.exists(path):
         try:
             emb_fn = _get_embedding_function(settings.rag.embedding_model)
-            client = chromadb.PersistentClient(path=path)
+            client = _get_chroma_client(path)
             col = client.get_collection(name="technique_cheatsheet_index", embedding_function=emb_fn)
             count = col.count()
 

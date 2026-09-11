@@ -19,13 +19,13 @@ model:
   # Fast primary provider — Coder, Planner default mode
   primary_provider:
     server_url: "https://api.groq.com/openai/v1"
-    name: "llama-3.3-70b-versatile"
+    name: "openai/gpt-oss-120b"
     api_key_env: "GROQ_API_KEY"
 
   # Automatic failover provider (on 429 or quota exhaustion)
   fallback_provider:
     server_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
-    name: "gemini-3.6-flash"
+    name: "gemini-3.1-flash-lite"
     api_key_env: "GOOGLE_API_KEY"
 
 budget:

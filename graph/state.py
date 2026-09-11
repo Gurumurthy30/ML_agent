@@ -12,6 +12,19 @@ class AgentState(TypedDict):
     target_confidence: Literal["explicit", "name_matched", "defaulted"]
 
     # ── Experiment control ─────────────────────────────────────────────────
+    # current_spec (set by planner_node) contains:
+    #   experiment_id: str
+    #   approach_type: "baseline" | "variant" | "ensemble"
+    #   model_family: str
+    #   modality: "tabular" | "cv" | "nlp" | "audio"
+    #   reasoning_mode: "default" | "tot"
+    #   approach_rationale: str
+    #   feature_engineering_notes: str
+    #   hyperparameter_ranges: Dict[str, Any]
+    #   primary_metric: str                 # chosen per-experiment, model-family aware
+    #   primary_metric_direction: "maximize" | "minimize"
+    #   metrics_to_track: List[str]         # e.g. ["roc_auc", "f1", "accuracy"] or ["rmse", "mae", "r2"]
+    #   validated_code: Optional[str]
     current_spec: Optional[Dict[str, Any]]
     last_escalation: Optional[Dict[str, Any]]
     last_redirect: Optional[Dict[str, Any]]

@@ -2,7 +2,11 @@ import os
 from pathlib import Path
 from typing import Optional
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+# Ensure environment variables from .env are loaded whenever settings are accessed
+load_dotenv()
 
 
 class ProviderConfig(BaseModel):
@@ -42,7 +46,7 @@ class ModelConfig(BaseModel):
     fallback_provider: ProviderConfig = Field(
         default_factory=lambda: ProviderConfig(
             server_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            name="gemini-3.6-flash",
+            name="gemini-3.1-flash-lite",
             api_key_env="GOOGLE_API_KEY"
         )
     )

@@ -62,6 +62,8 @@ class SessionContext(TypedDict):
     target_confidence: Literal["explicit", "name_matched", "defaulted"]
     task_type: str                  # binary_classification | multiclass_classification | regression | etc.
     metric: str
+    metric_direction: Literal["maximize", "minimize"]
+    metrics_to_track: List[str]
     column_names: List[str]         # for tabular: column names from first uploaded file
     file_listing: List[str]         # for non-tabular: list of discovered files
     train_shape: Optional[List[int]]
@@ -202,11 +204,21 @@ def _infer_task_type(df_head: Any, target_col: str) -> str:
         return "binary_classification"
 
 
-def _auto_pick_metric(task_type: str, user_message: str) -> str:
+_MINIMIZE_METRICS = {"rmse", "mse", "mae", "logloss", "log_loss", "loss"}
+
+
+def get_metric_direction(metric_name: str) -> Literal["maximize", "minimize"]:
+    """Returns 'minimize' for error/loss metrics, 'maximize' otherwise."""
+    m_clean = (metric_name or "").lower().replace("-", "_")
+    return "minimize" if m_clean in _MINIMIZE_METRICS else "maximize"
+
+
+def _auto_pick_metric(task_type: str, user_message: str) -> tuple[str, Literal["maximize", "minimize"]]:
     """
-    Auto-pick metric per brief §2 step 5 table.
+    Auto-pick default metric and its optimization direction per brief §2 step 5 table.
     If the user explicitly names a metric in their message, honour it.
     Otherwise use the ML-best-practice default — never ask the user.
+    Returns (metric_name, direction).
     """
     known_metrics = {
         "roc_auc", "auc", "auc-roc",
@@ -216,6 +228,7 @@ def _auto_pick_metric(task_type: str, user_message: str) -> str:
         "map", "ndcg",
     }
     msg_lower = user_message.lower()
+    chosen_metric = None
     for m in known_metrics:
         # word-boundary search
         if re.search(r"\b" + re.escape(m.replace("-", "[_-]?")) + r"\b", msg_lower):
@@ -228,9 +241,14 @@ def _auto_pick_metric(task_type: str, user_message: str) -> str:
                 "mse": "rmse",
                 "log_loss": "logloss",
             }.get(m, m)
-            return canonical
+            chosen_metric = canonical
+            break
 
-    return _METRIC_DEFAULTS.get(task_type, "roc_auc")
+    if not chosen_metric:
+        chosen_metric = _METRIC_DEFAULTS.get(task_type, "roc_auc")
+
+    direction = get_metric_direction(chosen_metric)
+    return chosen_metric, direction
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -266,6 +284,15 @@ class SessionInit:
             dest = self.data_dir / src.name
             shutil.copy2(src, dest)
             saved_files.append(dest)
+
+        if not saved_files:
+            default_data = Path("data")
+            if default_data.exists():
+                for src in default_data.iterdir():
+                    if src.is_file() and not src.name.startswith("."):
+                        dest = self.data_dir / src.name
+                        shutil.copy2(src, dest)
+                        saved_files.append(dest)
 
         # ── Step 2 & 3: Light inspection + modality detection ─────────────────
         modality = _detect_modality(saved_files)
@@ -304,7 +331,13 @@ class SessionInit:
 
         # ── Step 5: Infer task type + auto-pick metric ───────────────────────
         task_type = _infer_task_type(df_head, target_col) if (df_head is not None and target_col) else "binary_classification"
-        metric = _auto_pick_metric(task_type, user_message)
+        metric, metric_direction = _auto_pick_metric(task_type, user_message)
+        default_metrics_to_track = (
+            ["rmse", "mae", "r2"] if task_type == "regression" or metric_direction == "minimize"
+            else ["roc_auc", "f1", "accuracy"]
+        )
+        if metric not in default_metrics_to_track:
+            default_metrics_to_track = [metric] + default_metrics_to_track
 
         # ── Step 6: Assemble SessionContext ──────────────────────────────────
         ctx: SessionContext = {
@@ -316,6 +349,8 @@ class SessionInit:
             "target_confidence": target_confidence,
             "task_type": task_type,
             "metric": metric,
+            "metric_direction": metric_direction,
+            "metrics_to_track": default_metrics_to_track,
             "column_names": col_names,
             "file_listing": file_listing,
             "train_shape": train_shape,
@@ -329,7 +364,7 @@ class SessionInit:
 
         print(
             f"[SessionInit] session={self.session_id[:8]} | modality={modality} | "
-            f"target={target_col!r} ({target_confidence}) | metric={metric} | "
+            f"target={target_col!r} ({target_confidence}) | metric={metric} [{metric_direction}] | "
             f"files={len(saved_files)}"
         )
 

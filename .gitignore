@@ -74,5 +74,8 @@ benchmark/results/*
 # environment variables
 .env
 
+# Personal review notes
+review/
+
 # Node.js
 node_modules/

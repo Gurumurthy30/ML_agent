@@ -1,0 +1,31 @@
+customer_id,age,tenure,monthly_charges,total_charges,contract_type,churn
+1,25,12,65.5,786.0,Month-to-month,1
+2,38,34,89.2,3032.8,One year,0
+3,55,2,20.1,40.2,Month-to-month,1
+4,42,60,105.0,6300.0,Two year,0
+5,31,8,45.0,360.0,Month-to-month,0
+6,60,45,70.3,3163.5,One year,0
+7,29,3,80.0,240.0,Month-to-month,1
+8,48,24,55.5,1332.0,Month-to-month,0
+9,36,36,95.0,3420.0,Two year,0
+10,22,6,30.0,180.0,Month-to-month,1
+11,52,50,110.0,5500.0,Two year,0
+12,41,18,60.0,1080.0,One year,0
+13,33,10,75.0,750.0,Month-to-month,1
+14,64,70,115.0,8050.0,Two year,0
+15,28,4,40.0,160.0,Month-to-month,0
+16,46,28,85.0,2380.0,One year,0
+17,39,15,50.0,750.0,Month-to-month,0
+18,58,62,100.0,6200.0,Two year,0
+19,26,1,70.0,70.0,Month-to-month,1
+20,35,22,65.0,1430.0,One year,0
+21,50,40,90.0,3600.0,Two year,0
+22,44,19,55.0,1045.0,Month-to-month,0
+23,30,7,80.0,560.0,Month-to-month,1
+24,62,55,105.0,5775.0,Two year,0
+25,27,5,45.0,225.0,Month-to-month,0
+26,40,30,75.0,2250.0,One year,0
+27,53,48,95.0,4560.0,Two year,0
+28,34,14,60.0,840.0,Month-to-month,1
+29,47,38,85.0,3230.0,One year,0
+30,65,72,120.0,8640.0,Two year,0

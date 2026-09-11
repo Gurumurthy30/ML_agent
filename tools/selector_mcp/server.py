@@ -16,6 +16,7 @@ def compute_log_stats(
     n_rounds: int = 3,
     epsilon_rel: float = 0.005,
     last_redirect_reason: Optional[str] = None,
+    direction: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Reads experiment_log.jsonl for the session and evaluates plateau/variance rules.
@@ -55,6 +56,7 @@ def compute_log_stats(
         n_rounds=n_rounds,
         epsilon_rel=epsilon_rel,
         last_redirect_reason=last_redirect_reason,
+        direction=direction,
     )
 
 
@@ -70,6 +72,7 @@ class SelectorMCP:
         n_rounds: int = 3,
         epsilon_rel: float = 0.005,
         last_redirect_reason: Optional[str] = None,
+        direction: Optional[str] = None,
     ) -> Dict[str, Any]:
         return compute_log_stats(
             session_id=self.session_id,
@@ -77,4 +80,5 @@ class SelectorMCP:
             n_rounds=n_rounds,
             epsilon_rel=epsilon_rel,
             last_redirect_reason=last_redirect_reason,
+            direction=direction,
         )

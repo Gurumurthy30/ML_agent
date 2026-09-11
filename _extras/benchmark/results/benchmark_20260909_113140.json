@@ -1,0 +1,39 @@
+{
+  "timestamp": "20260909_113140",
+  "server_url": "http://localhost:8000/v1",
+  "mock_mode": true,
+  "results": {
+    "data_explorer": {
+      "reps": 5,
+      "mean_wall_time_sec": 2.7,
+      "median_wall_time_sec": 2.7,
+      "std_wall_time_sec": 0.158,
+      "mean_tok_per_sec": 21.5,
+      "mean_completion_tokens": 350
+    },
+    "planner": {
+      "reps": 5,
+      "mean_wall_time_sec": 2.7,
+      "median_wall_time_sec": 2.7,
+      "std_wall_time_sec": 0.158,
+      "mean_tok_per_sec": 21.5,
+      "mean_completion_tokens": 350
+    },
+    "coder": {
+      "reps": 5,
+      "mean_wall_time_sec": 2.7,
+      "median_wall_time_sec": 2.7,
+      "std_wall_time_sec": 0.158,
+      "mean_tok_per_sec": 20.5,
+      "mean_completion_tokens": 350
+    },
+    "selector": {
+      "reps": 5,
+      "mean_wall_time_sec": 2.7,
+      "median_wall_time_sec": 2.7,
+      "std_wall_time_sec": 0.158,
+      "mean_tok_per_sec": 20.5,
+      "mean_completion_tokens": 350
+    }
+  }
+}
