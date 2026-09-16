@@ -1,3 +1,0 @@
-"""
-rag/sources package initialization
-"""

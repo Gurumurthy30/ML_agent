@@ -70,12 +70,25 @@ state/*
 benchmark/results/*
 !benchmark/results/.gitkeep
 *.log
+*.events.jsonl
+
+# Runtime generated artifacts & logs
+artifacts/
+logs/
+logs_smoke/
+smoke_data/
+scratch/
+memory/store/*.jsonl
 
 # environment variables
 .env
+.env.local
 
 # Personal review notes
 review/
 
 # Node.js
 node_modules/
+
+# Notebook
+Notebook/
