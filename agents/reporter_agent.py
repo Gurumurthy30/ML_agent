@@ -18,7 +18,7 @@ import os
 import json
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
-from langchain_ollama import ChatOllama
+from tools.llm import get_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from state import AgentState
@@ -30,12 +30,7 @@ _ARTIFACT_DIR = "artifacts/reports"
 os.makedirs(_ARTIFACT_DIR, exist_ok=True)
 
 
-def _make_llm():
-    return ChatOllama(
-        model="gpt-oss:20b-cloud", base_url="https://ollama.com",
-        client_kwargs={"headers": {"Authorization": f"Bearer {os.getenv('OLLAMA_API_KEY')}"}},
-        temperature=0,
-    )
+
 
 
 def _build_monitoring_summary(run_id: str) -> dict:
@@ -103,7 +98,7 @@ Never invent numbers not present in the context — only report what's actually 
 Write in plain prose with short section headers, not a wall of JSON."""
     human_prompt = f"Run context:\n{json.dumps(context, default=str, indent=2)}"
 
-    llm = _make_llm()
+    llm = get_llm()
     with step_timer(run_id, "reporter_agent", "generate_report"):
         report_text = stream_text(
             llm, [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],

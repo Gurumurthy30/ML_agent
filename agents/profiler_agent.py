@@ -15,7 +15,7 @@ is still what's being diffed, not decoded pixels/audio.
 import os
 import json
 import pandas as pd
-from langchain_ollama import ChatOllama
+from tools.llm import get_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from state import AgentState
@@ -107,12 +107,7 @@ def compute_data_profile(df: pd.DataFrame, target_column: str = None) -> dict:
     return profile
 
 
-def _make_llm():
-    return ChatOllama(
-        model="gpt-oss:20b-cloud", base_url="https://ollama.com",
-        client_kwargs={"headers": {"Authorization": f"Bearer {os.getenv('OLLAMA_API_KEY')}"}},
-        temperature=0,
-    )
+
 
 
 def profile_agent(state: AgentState) -> dict:
@@ -124,7 +119,7 @@ def profile_agent(state: AgentState) -> dict:
         target_column = state.get("target_column")
         computed_profile = compute_data_profile(df, target_column)
 
-    llm = _make_llm()
+    llm = get_llm()
 
     system_prompt = """You are the Profiler agent in a multi-agent ML pipeline.
 Interpret pre-computed dataset statistics; never invent numbers yourself.

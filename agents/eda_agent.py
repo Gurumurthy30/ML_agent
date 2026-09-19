@@ -13,7 +13,7 @@ import uuid
 import json
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
-from langchain_ollama import ChatOllama
+from tools.llm import get_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from state import AgentState
@@ -27,12 +27,7 @@ _TMP_DIR = "artifacts/eda"
 os.makedirs(_TMP_DIR, exist_ok=True)
 
 
-def _make_llm():
-    return ChatOllama(
-        model="gpt-oss:120b-cloud", base_url="https://ollama.com",
-        client_kwargs={"headers": {"Authorization": f"Bearer {os.getenv('OLLAMA_API_KEY')}"}},
-        temperature=0,
-    )
+
 
 
 class EdaStepDecision(BaseModel):
@@ -53,7 +48,7 @@ from tools.streaming import stream_text, invoke_structured_robust
 def eda_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
-    llm = _make_llm()
+    llm = get_llm()
 
     profile = state.get("profile", {})
     ceiling = compute_iteration_ceiling(profile)
@@ -63,7 +58,8 @@ def eda_agent(state: AgentState) -> dict:
     memory_query = (f"EDA for a {state.get('task_type', 'unknown')} task, "
                     f"modalities: {profile.get('detected_modalities')}, "
                     f"metric: {profile.get('recommended_metric')}")
-    prior_memory = lookup_run_memory(state["dataset_fingerprint"], memory_query, run_id=run_id)
+    prior_memory = lookup_run_memory(state["dataset_fingerprint"], memory_query, run_id=run_id,
+                                     calling_agent="eda_agent")
 
     def decide_next_step(condensed_history):
         context = {
@@ -118,6 +114,7 @@ CRITICAL RULES:
                 output_path=output_path,
                 context={"profile": profile, "target_column": state.get("target_column")},
                 run_id=run_id, timeout=exec_timeout,
+                parent_agent="eda_agent", parent_iteration=iteration,
             )
         stdout_preview = (result["stdout"] or "").strip().splitlines()
         headline = stdout_preview[0][:160] if stdout_preview else ("failed" if not result["success"] else "no output")
@@ -131,7 +128,7 @@ CRITICAL RULES:
     )
 
     # Short narrative synthesis for downstream agents (Features/Reporter), streamed live.
-    synth_llm = _make_llm()
+    synth_llm = get_llm()
     synth_system = ("You are an expert ML statistician synthesizing exploratory data analysis (EDA) results "
                     "for the downstream Feature Engineer agent.\n"
                     "CRITICAL: Do NOT mention charts, plots, or visual figures.\n"

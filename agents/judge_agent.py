@@ -17,7 +17,7 @@ import os
 import json
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
-from langchain_ollama import ChatOllama
+from tools.llm import get_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from state import AgentState
@@ -25,12 +25,7 @@ from memory.run_memory import lookup_run_memory
 from tools.logger import get_logger, log_event, step_timer
 
 
-def _make_llm():
-    return ChatOllama(
-        model="gpt-oss:20b-cloud", base_url="https://ollama.com",
-        client_kwargs={"headers": {"Authorization": f"Bearer {os.getenv('OLLAMA_API_KEY')}"}},
-        temperature=0,
-    )
+
 
 
 class JudgeVerdict(BaseModel):
@@ -55,7 +50,7 @@ from tools.streaming import invoke_structured_robust
 def judge_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
-    llm = _make_llm()
+    llm = get_llm()
 
     profile = state.get("profile", {})
     memory_query = (f"Judging a {state.get('task_type', 'unknown')} run, "
@@ -122,6 +117,7 @@ forever chasing marginal gains."""
         "last_verdict": verdict.verdict,
         "judge_feedback": verdict.feedback,
         "run_memory": [f"[Judge] {verdict.verdict}: {verdict.feedback[:200]}"],
+        "last_executed_agent": "judge",
     }
 
     if verdict.verdict == "reject":

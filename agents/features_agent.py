@@ -20,7 +20,7 @@ import json
 from typing import Literal, Optional
 import pandas as pd
 from pydantic import BaseModel, Field
-from langchain_ollama import ChatOllama
+from tools.llm import get_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from state import AgentState
@@ -33,12 +33,7 @@ _TMP_DIR = "artifacts/features"
 os.makedirs(_TMP_DIR, exist_ok=True)
 
 
-def _make_llm():
-    return ChatOllama(
-        model="gpt-oss:20b-cloud", base_url="https://ollama.com",
-        client_kwargs={"headers": {"Authorization": f"Bearer {os.getenv('OLLAMA_API_KEY')}"}},
-        temperature=0,
-    )
+
 
 
 def _load_df(path: str) -> pd.DataFrame:
@@ -66,14 +61,15 @@ from tools.streaming import invoke_structured_robust
 def features_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
-    llm = _make_llm()
+    llm = get_llm()
 
     profile = state.get("profile", {})
     ceiling = compute_iteration_ceiling(profile)
     exec_timeout = compute_exec_timeout(profile)
     memory_query = (f"Feature engineering for a {state.get('task_type', 'unknown')} task, "
                     f"modalities: {profile.get('detected_modalities')}")
-    prior_memory = lookup_run_memory(state["dataset_fingerprint"], memory_query, run_id=run_id)
+    prior_memory = lookup_run_memory(state["dataset_fingerprint"], memory_query, run_id=run_id,
+                                     calling_agent="features_agent")
 
     current_path = state.get("transformed_dataset_path") or state["dataset_path"]
     is_retry = state.get("retry_tier") == 2
@@ -106,6 +102,12 @@ def features_agent(state: AgentState) -> dict:
                          "2) Resolving multicollinearity (dropping or combining highly correlated features |r| > 0.7). "
                          "3) Transforming skewed numerical distributions (log1p/Box-Cox). "
                          "4) Encoding categorical columns. "
+                         "STOP as soon as the key issues identified in EDA are addressed — "
+                         "do NOT keep engineering after the primary issues are resolved. "
+                         "Check steps_taken_this_run carefully — do NOT repeat a transformation "
+                         "that already appears there. If this is a tier-2 retry, address ONLY "
+                         "the specific judge feedback cited and stop immediately after — do not "
+                         "re-run all prior steps from scratch. "
                          "Self-report honestly if a step could irreversibly lose "
                          "information. Stop once the feature set is ready for modeling."
                          + retry_note)
@@ -144,6 +146,7 @@ def features_agent(state: AgentState) -> dict:
                 output_path=output_path,
                 context={"profile": profile, "target_column": state.get("target_column")},
                 run_id=run_id, timeout=exec_timeout,
+                parent_agent="features_agent", parent_iteration=iteration,
             )
 
         diff_info = {}
@@ -154,7 +157,7 @@ def features_agent(state: AgentState) -> dict:
                 cols_removed = sorted(set(before_df.columns) - set(after_df.columns))
                 row_delta = len(after_df) - len(before_df)
                 structural_destructive = bool(cols_removed) or row_delta != 0
-                diff_info = {"columns_removed": cols_removed, "row_delta": row_delta}
+                diff_info = {"dropped_columns": cols_removed, "row_delta": row_delta}
             except Exception as exc:
                 logger.warning("features_agent: structural diff failed: %s", exc)
                 diff_info = {"error": str(exc)}
@@ -208,6 +211,7 @@ def features_agent(state: AgentState) -> dict:
         "transformed_dataset_path": current_path,
         "run_memory": [f"[Features] {c}" for c in loop_result["condensed_history"]],
         "iteration": state.get("iteration", 0) + loop_result["iterations"],
+        "last_executed_agent": "features",
     }
 
     # Hard block vs. advisory — two different mechanisms, do not conflate:

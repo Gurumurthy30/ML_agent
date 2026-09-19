@@ -82,12 +82,15 @@ def route_from_supervisor(state: AgentState) -> str:
     implemented = {
         "profiler": "profiler", "eda_agent": "eda_agent", "features": "features",
         "modeler": "modeler", "judge": "judge", "reporter": "reporter",
+        # human_approval can be reached from supervisor via:
+        #   - global iteration ceiling (graph_node_supervisor short-circuit)
+        #   - retry cap overflow (_validate_and_override_decision)
+        #   - stall-retry escalation
+        "human_approval": "human_approval",
     }
     next_agent = state.get("next_agent")
     if next_agent in implemented:
         return implemented[next_agent]
-    # "human_approval"-via-supervisor is not routed here (Features reaches it
-    # directly on its own hard block) — stop cleanly rather than silently mis-routing.
     return END
 
 
@@ -107,7 +110,8 @@ def build_graph():
 
     graph.add_conditional_edges("supervisor", route_from_supervisor, {
         "profiler": "profiler", "eda_agent": "eda_agent", "features": "features",
-        "modeler": "modeler", "judge": "judge", "reporter": "reporter", END: END,
+        "modeler": "modeler", "judge": "judge", "reporter": "reporter",
+        "human_approval": "human_approval", END: END,
     })
 
     graph.add_edge("profiler", "supervisor")

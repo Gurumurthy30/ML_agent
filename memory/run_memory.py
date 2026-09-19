@@ -86,9 +86,23 @@ def _read_all() -> list:
     return records
 
 
-def store_run_memory(dataset_fingerprint: str, run_id: str, text: str, metadata: dict) -> None:
+def store_run_memory(
+    dataset_fingerprint: str,
+    run_id: str,
+    text: str,
+    metadata: dict,
+    calling_agent: str = None,
+) -> None:
     """Persist one run's summary for future retrieval. Called by the Reporter agent
-    at the end of a run."""
+    at the end of a run.
+
+    Args:
+        dataset_fingerprint: Content hash of the dataset.
+        run_id: The run identifier.
+        text: Summary text to embed and store.
+        metadata: Arbitrary metadata dict.
+        calling_agent: Name of the agent storing the memory (for attribution in logs).
+    """
     record = {
         "dataset_fingerprint": dataset_fingerprint,
         "run_id": run_id,
@@ -98,16 +112,33 @@ def store_run_memory(dataset_fingerprint: str, run_id: str, text: str, metadata:
     }
     with open(_STORE_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, default=str) + "\n")
-    log_event(run_id, "run_memory", "stored", dataset_fingerprint=dataset_fingerprint,
+    log_event(run_id, calling_agent or "run_memory", "stored",
+              triggering_agent=calling_agent,
+              dataset_fingerprint=dataset_fingerprint,
               text_len=len(text))
 
 
-def lookup_run_memory(dataset_fingerprint: str, query: str, top_k: int = 3,
-                       run_id: str = None) -> Optional[list]:
+def lookup_run_memory(
+    dataset_fingerprint: str,
+    query: str,
+    top_k: int = 3,
+    run_id: str = None,
+    calling_agent: str = None,
+) -> Optional[list]:
     """Return up to `top_k` past-run records most similar to `query`, ranked by
     cosine similarity, or None if the store is empty. Runs for the SAME dataset
     fingerprint are ranked first (exact match on "we've literally seen this dataset
-    before"), then similarity search covers everything else."""
+    before"), then similarity search covers everything else.
+
+    Args:
+        dataset_fingerprint: Content hash to prioritize same-dataset results.
+        query: Natural language query to embed and search.
+        top_k: Maximum number of results to return.
+        run_id: Current run ID for logging.
+        calling_agent: Name of the agent performing the lookup (for attribution).
+                       Logged as `triggering_agent` so the UI can nest the RAG result
+                       inside the calling agent's turn card.
+    """
     records = _read_all()
     if not records:
         return None
@@ -127,5 +158,9 @@ def lookup_run_memory(dataset_fingerprint: str, query: str, top_k: int = 3,
         for score, rec in scored[:top_k]
     ]
     if run_id:
-        log_event(run_id, "run_memory", "lookup", query=query[:200], n_results=len(top), results=top)
+        # Use calling_agent as the `agent` field so the UI can attribute this lookup
+        # to the correct parent agent's turn card (not a generic "run_memory" card).
+        log_event(run_id, calling_agent or "run_memory", "lookup",
+                  triggering_agent=calling_agent,
+                  query=query[:200], n_results=len(top), results=top)
     return top or None

@@ -22,10 +22,11 @@ import re
 import json
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
-from langchain_ollama import ChatOllama
+from tools.llm import get_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from state import AgentState
+from config import METRIC_IMPROVEMENT_EPSILON, CONVERGENCE_PATIENCE
 from agents.coder_agent import coder_agent
 from agents.loop_utils import compute_iteration_ceiling, compute_exec_timeout, run_exploration_loop
 from memory.run_memory import lookup_run_memory
@@ -34,16 +35,11 @@ from tools.streaming import invoke_structured_robust
 
 _TMP_DIR = "artifacts/models"
 os.makedirs(_TMP_DIR, exist_ok=True)
-_PLATEAU_WINDOW = 5
+_PLATEAU_WINDOW = CONVERGENCE_PATIENCE
 _RESULT_LINE_RE = re.compile(r"RESULT_JSON:\s*(\{.*\})")
 
 
-def _make_llm():
-    return ChatOllama(
-        model="gpt-oss:20b-cloud", base_url="https://ollama.com",
-        client_kwargs={"headers": {"Authorization": f"Bearer {os.getenv('OLLAMA_API_KEY')}"}},
-        temperature=0,
-    )
+
 
 
 class ModelStepDecision(BaseModel):
@@ -77,14 +73,15 @@ def _metric_higher_is_better(metric_name: str) -> bool:
 def modeler_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
-    llm = _make_llm()
+    llm = get_llm()
 
     profile = state.get("profile", {})
     ceiling = compute_iteration_ceiling(profile)
     exec_timeout = compute_exec_timeout(profile)
     memory_query = (f"Modeling for a {state.get('task_type', 'unknown')} task, "
                     f"modalities: {profile.get('detected_modalities')}")
-    prior_memory = lookup_run_memory(state["dataset_fingerprint"], memory_query, run_id=run_id)
+    prior_memory = lookup_run_memory(state["dataset_fingerprint"], memory_query, run_id=run_id,
+                                     calling_agent="modeler_agent")
 
     dataset_path = state.get("transformed_dataset_path") or state["dataset_path"]
     task_type = state.get("task_type") or "classification"
@@ -136,8 +133,13 @@ def modeler_agent(state: AgentState) -> dict:
                          "tuning and should never be surfaced as a separate retry. The Coder "
                          "script MUST print a line of the exact form RESULT_JSON: "
                          "{\"model_family\": <name>, \"cv_score\": <float>, \"metric\": <name>} "
-                         "before finishing. Stop once you have a model you're confident "
-                         "recommending." + retry_note)
+                         "before finishing. "
+                         "STOP once you have tried 3+ model families and have a model you're "
+                         "confident recommending — do not explore indefinitely. "
+                         "Never reuse a family; if all reasonable families are tried, stop. "
+                         "If on a tier-1 retry, address only the specific judge feedback cited "
+                         "and stop as soon as that issue is addressed."
+                         + retry_note)
         human_prompt = f"Context:\n{json.dumps(context, default=str, indent=2)}"
         with step_timer(run_id, "modeler_agent", "decide_next_step"):
             try:
@@ -170,6 +172,7 @@ def modeler_agent(state: AgentState) -> dict:
                 context={"profile": profile, "target_column": state.get("target_column"),
                         "task_type": state.get("task_type"), "metric": metric_name},
                 run_id=run_id, timeout=exec_timeout,
+                parent_agent="modeler_agent", parent_iteration=iteration,
             )
 
         parsed = _parse_result_line(result["stdout"]) if result["success"] else None
@@ -179,11 +182,26 @@ def modeler_agent(state: AgentState) -> dict:
         if not result["success"] or not parsed or "cv_score" not in parsed:
             best_snapshots[iteration] = best_metric
             condensed = f"iter {iteration}: {decision.task_spec[:80]} -> failed/no parsable score"
-            return {"condensed": condensed, "record": record}
+            return {
+                "condensed": condensed, "record": record,
+                "metric": None, "metric_name": metric_name, "metric_delta": 0.0,
+                "is_improvement": False, "is_stall": True,
+            }
 
         family = parsed.get("model_family", "unknown")
         score = float(parsed["cv_score"])
         tried_families.append(family)
+
+        prev_score = new_scores[-1] if new_scores else (state.get("metric_history") or [None])[-1]
+        if prev_score is not None:
+            delta = score - prev_score
+            is_improvement = delta > METRIC_IMPROVEMENT_EPSILON if higher_is_better else delta < -METRIC_IMPROVEMENT_EPSILON
+            is_stall = not is_improvement
+        else:
+            delta = 0.0
+            is_improvement = True
+            is_stall = False
+
         new_candidates.append({
             "model_family": family, "cv_score": score,
             "metric": parsed.get("metric", metric_name),
@@ -196,16 +214,24 @@ def modeler_agent(state: AgentState) -> dict:
         best_snapshots[iteration] = best_metric
 
         condensed = f"iter {iteration}: {family} -> {parsed.get('metric', metric_name)}={score:.4f}"
-        return {"condensed": condensed, "record": record}
+        return {
+            "condensed": condensed, "record": record,
+            "metric": score, "metric_name": parsed.get("metric", metric_name),
+            "metric_delta": delta, "is_improvement": is_improvement, "is_stall": is_stall,
+        }
 
     def plateau_check(iteration):
-        """Modeler's mechanical backstop: stop if `best_metric` hasn't improved over
-        the last _PLATEAU_WINDOW iterations, even if the LLM would keep going."""
+        """Modeler's mechanical backstop: stop if `best_metric` hasn't improved beyond
+        METRIC_IMPROVEMENT_EPSILON over the last _PLATEAU_WINDOW iterations."""
         if iteration < _PLATEAU_WINDOW or best_metric is None:
             return False
         window_start = iteration - _PLATEAU_WINDOW
         baseline = best_snapshots.get(window_start)
-        return baseline is not None and baseline == best_snapshots.get(iteration)
+        current = best_snapshots.get(iteration)
+        if baseline is None or current is None:
+            return False
+        improvement = (current - baseline) if higher_is_better else (baseline - current)
+        return improvement < METRIC_IMPROVEMENT_EPSILON
 
     loop_result = run_exploration_loop(
         run_id=run_id, agent_name="modeler_agent", ceiling=ceiling,
@@ -219,6 +245,7 @@ def modeler_agent(state: AgentState) -> dict:
         "best_metric": best_metric,            # plain overwrite; compare-and-replace already done above
         "run_memory": [f"[Modeler] {c}" for c in loop_result["condensed_history"]],
         "iteration": state.get("iteration", 0) + loop_result["iterations"],
+        "last_executed_agent": "modeler",
     }
 
     # Both "ceiling" and "plateau" mean the LLM didn't call it converged on its own ->

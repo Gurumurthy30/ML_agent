@@ -7,19 +7,20 @@ they decide the next step and what "destructive"/"plateaued" means for them, but
 driving loop (ceiling, condensed vs. full history, exit-reason bookkeeping) is
 identical, so it lives here once instead of being copy-pasted three times.
 """
+from config import LOOP_SAFETY_CEILING
 from tools.logger import log_event
 
 
 def compute_iteration_ceiling(profile: dict) -> int:
     """
-    Auto-scales the safety ceiling from the dataset profile instead of a flat
-    hardcoded number: floor of 5, +1 per data-quality flag present, plus a
-    size/complexity bump based on column count, capped at 25.
+    Auto-scales the safety ceiling from the dataset profile instead of an arbitrary low cap.
+    Floor of 5, +1 per data-quality flag present, plus a size/complexity bump based on column count,
+    capped at the configurable LOOP_SAFETY_CEILING (default 30).
 
     This is a safety limit, not a target to fill — most runs should stop earlier via
-    the agent's own "I'm satisfied" decision.
+    convergence or the agent's own "stop" decision.
     """
-    floor, cap = 5, 25
+    floor, cap = 5, LOOP_SAFETY_CEILING
     profile = profile or {}
     flags = profile.get("data_quality_flags") or []
     n_cols = profile.get("columns") or len(profile.get("features") or [])
@@ -67,6 +68,11 @@ def run_exploration_loop(
         "condensed": str            one-line summary fed back into the next decision
         "record": dict              full detail, archived (not fed back to the LLM)
         "hard_block": bool          optional — signals a genuine pause (Features only)
+        "metric": float, optional   evaluated validation score for this iteration
+        "metric_name": str, optional
+        "metric_delta": float, optional
+        "is_improvement": bool, optional
+        "is_stall": bool, optional
 
     plateau_check(iteration: int) -> bool, optional
         Only Modeler passes this — a mechanical "stop even if the LLM wants to keep
@@ -92,6 +98,20 @@ def run_exploration_loop(
         step_result = execute_step(decision, iteration)
         full_history.append(step_result["record"])
         condensed_history.append(step_result["condensed"])
+
+        # Log structured iteration result for real-time frontend ledger
+        log_event(
+            run_id, agent_name, "iteration_result",
+            iteration=iteration,
+            agent=agent_name,
+            metric=step_result.get("metric"),
+            metric_name=step_result.get("metric_name"),
+            metric_delta=step_result.get("metric_delta"),
+            is_improvement=step_result.get("is_improvement"),
+            is_stall=step_result.get("is_stall", False),
+            task_spec=getattr(decision, "task_spec", None),
+            summary=step_result.get("condensed"),
+        )
 
         if step_result.get("hard_block"):
             exit_reason = "hard_block"

@@ -3,34 +3,29 @@ Shared by EDA, Features, and Modeler. Its only job is "does the code run correct
 It does NOT judge whether the analysis/feature/model is good — that's the calling
 agent's job (see each agent's exploration loop).
 
-Execution goes through the real MCP server (tools/mcp_client.py -> mcp_server/
-python_exec_server.py) by default. If spawning the MCP server fails for any reason
+Execution goes through the real MCP server (tools/mcp_client.py ->
+mcp_server/python_exec_server.py) by default. If spawning the MCP server fails for any reason
 (package missing, platform issue, etc.), this falls back to the direct in-process
 call in tools/python_exec_tool.py — same contract either way, so nothing downstream
 needs to know which path ran. Set PIPELINE_USE_MCP_EXEC=0 to skip MCP entirely.
+
+parent_agent / parent_iteration: passed by EDA/Features/Modeler so every Coder
+log event is attributed to the correct parent turn, not a generic "coder_agent" bucket.
+The UI uses these to nest Coder sub-cards inside the parent agent's turn card.
 """
 import os
 import json
 import asyncio
 import threading
-from langchain_ollama import ChatOllama
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
+from tools.llm import get_llm
 from tools.python_exec_tool import run_python_exec
 from tools.mcp_client import run_python_exec_via_mcp
 from tools.streaming import stream_text
 from tools.logger import get_logger, log_event, step_timer
 
 _USE_MCP = os.environ.get("PIPELINE_USE_MCP_EXEC", "1") != "0"
-
-
-def _make_llm():
-    return ChatOllama(
-        model="gpt-oss:120b-cloud",
-        base_url="https://ollama.com",
-        client_kwargs={"headers": {"Authorization": f"Bearer {os.getenv('OLLAMA_API_KEY')}"}},
-        temperature=0,
-    )
 
 
 def _run_coro_sync(coro):
@@ -95,6 +90,8 @@ def coder_agent(
     max_attempts: int = 4,
     run_id: str = None,
     timeout: int = 60,
+    parent_agent: str = None,
+    parent_iteration: int = None,
 ) -> dict:
     """
     task_spec: short natural-language description of what code should accomplish
@@ -107,13 +104,18 @@ def coder_agent(
     timeout: seconds allowed per execution attempt. Bump this for non-tabular
                modalities (image/audio decoding, embedding models) — callers pass a
                higher value when profile["modality_summary"] indicates it's needed.
+    parent_agent: name of the calling agent (e.g. "eda_agent", "features_agent",
+               "modeler_agent"). Included in every log event so the UI can nest
+               Coder sub-cards inside the parent agent's turn card.
+    parent_iteration: iteration number within the parent's exploration loop.
+               Combined with parent_agent for precise sub-card grouping.
     Returns: {"success": bool, "code": str, "stdout": str, "output_path": str|None, "attempts": int}
     """
     input_paths = dict(input_paths)
     if "dataset" in input_paths and "dataset_dir" not in input_paths:
         input_paths["dataset_dir"] = os.path.dirname(os.path.abspath(input_paths["dataset"])) or "."
 
-    llm = _make_llm()
+    llm = get_llm(large=True)  # Coder uses the larger model for better code generation
 
     system_prompt = f"""You are the Coder sub-agent. Write a complete, self-contained Python
 script that accomplishes the task below. Read inputs from paths given in environment variables
@@ -161,7 +163,8 @@ Output ONLY the Python code, no markdown fences, no commentary."""
     for attempt in range(1, max_attempts + 1):
         with step_timer(log_key, "coder_agent", f"generate_attempt_{attempt}"):
             response_text = stream_text(
-                llm, messages, run_id=run_id, agent=f"coder_agent(attempt {attempt})",
+                llm, messages, run_id=run_id,
+                agent=f"coder_agent(attempt {attempt})",
             )
         code = _strip_code_fences(response_text)
 
@@ -178,7 +181,8 @@ Output ONLY the Python code, no markdown fences, no commentary."""
 
         log_event(log_key, "coder_agent", "attempt_result", attempt=attempt,
                   success=result["success"], code=code,
-                  stdout=result.get("stdout", ""), stderr=result.get("stderr", ""))
+                  stdout=result.get("stdout", ""), stderr=result.get("stderr", ""),
+                  parent_agent=parent_agent, parent_iteration=parent_iteration)
 
         if result["success"]:
             return {

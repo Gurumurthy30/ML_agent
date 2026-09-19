@@ -215,3 +215,128 @@ code, pre, .font-mono {
 .chevron-rotate.expanded {
   transform: rotate(90deg);
 }
+
+/* Tab Bar & Button Pressed States */
+.drawer-tab {
+  position: relative;
+  transition: all 0.15s ease-in-out;
+}
+
+.drawer-tab-active {
+  background-color: rgba(217, 119, 87, 0.1) !important;
+  color: #D97757 !important;
+  border-bottom-color: #D97757 !important;
+  font-weight: 700 !important;
+}
+
+.dark .drawer-tab-active {
+  background-color: rgba(226, 132, 102, 0.15) !important;
+  color: #E28466 !important;
+  border-bottom-color: #E28466 !important;
+}
+
+.btn-header-active {
+  background-color: rgba(217, 119, 87, 0.12) !important;
+  border-color: rgba(217, 119, 87, 0.5) !important;
+  color: #D97757 !important;
+  box-shadow: 0 0 0 1px rgba(217, 119, 87, 0.25) !important;
+}
+
+.dark .btn-header-active {
+  background-color: rgba(226, 132, 102, 0.2) !important;
+  border-color: rgba(226, 132, 102, 0.5) !important;
+  color: #E28466 !important;
+  box-shadow: 0 0 0 1px rgba(226, 132, 102, 0.3) !important;
+}
+
+/* Pulsing Status Dot */
+@keyframes livePulse {
+  0% { transform: scale(0.95); opacity: 0.8; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+  70% { transform: scale(1.05); opacity: 1; box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+  100% { transform: scale(0.95); opacity: 0.8; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+.pulse-dot-live {
+  animation: livePulse 2s infinite ease-in-out;
+}
+
+/* ---------------------------------------------------------------------------
+   Print Stylesheet — Clean export for bug reports and offline documentation
+--------------------------------------------------------------------------- */
+@media print {
+  body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #FFFFFF !important;
+    color: #000000 !important;
+    font-size: 11pt !important;
+  }
+
+  /* Hide interactive / navigation elements */
+  #left-sidebar,
+  #toggle-sidebar-btn,
+  #toggle-trace-btn,
+  #toggle-debug-btn,
+  #close-trace-btn,
+  #scroll-bottom-container,
+  #new-run-btn,
+  #refresh-runs-btn,
+  #theme-toggle-btn,
+  #run-config-form,
+  .quick-chip,
+  #start-run-btn,
+  .drawer-tab {
+    display: none !important;
+  }
+
+  header {
+    position: static !important;
+    border-bottom: 2px solid #333 !important;
+    background: transparent !important;
+  }
+
+  main {
+    overflow: visible !important;
+    height: auto !important;
+    width: 100% !important;
+  }
+
+  #feed-container {
+    overflow: visible !important;
+    height: auto !important;
+    padding: 0 !important;
+  }
+
+  #right-drawer {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    border: none !important;
+    page-break-before: always;
+  }
+
+  .drawer-panel {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+    border-top: 1px solid #ccc;
+    padding-top: 1rem;
+    margin-top: 1rem;
+  }
+
+  /* Expand all collapsed sections */
+  details {
+    display: block !important;
+  }
+  details[open] summary ~ * {
+    display: block !important;
+  }
+  pre, code {
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+    max-height: none !important;
+    background: #f4f4f4 !important;
+    color: #000 !important;
+    border: 1px solid #ddd !important;
+  }
+}

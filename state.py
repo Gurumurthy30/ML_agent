@@ -69,7 +69,8 @@ class AgentState(TypedDict):
     judge_feedback: Optional[str]
     requires_human_approval: bool
     approval_reason: Optional[Literal[
-        "destructive_action", "guided_mode", "policy_sensitive", "high_risk", "unresolved_exploration"
+        "destructive_action", "guided_mode", "policy_sensitive", "high_risk",
+        "unresolved_exploration", "stalled", "global_iteration_ceiling", "retry_cap_exceeded"
     ]]
     approval_status: Optional[Literal["approved", "modify", "reject"]]
     feature_plan: Optional[dict]   # persists {code, description, destructive_self_assessment}
@@ -83,8 +84,11 @@ class AgentState(TypedDict):
     artifact_path: str
     run_memory: Annotated[list, operator.add]
 
-    # --- Safety ---
+    # --- Safety, Stall Detection & Stop Reasons ---
     iteration: int  # global step counter, guards against infinite Supervisor cycling
+    stop_reason: Optional[Literal["converged", "stalled", "hit_safety_ceiling", "errored", "user_rejected"]]
+    agent_fingerprints: dict  # {agent_name: hash_str} for stall detection
+    last_executed_agent: Optional[str]
 
 
 def build_initial_state(
@@ -128,4 +132,7 @@ def build_initial_state(
         "artifact_path": "",
         "run_memory": [],
         "iteration": 0,
+        "stop_reason": None,
+        "agent_fingerprints": {},
+        "last_executed_agent": None,
     }
