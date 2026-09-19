@@ -285,10 +285,15 @@ def approve_run(run_id: str, req: ApproveRequest):
     Resume a paused run with human decision (approved, modify, or reject).
     """
     if run_id not in RUNS:
-        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Run '{run_id}' not found in active session (the server may have been restarted).",
+        )
 
     run_entry = RUNS[run_id]
     if run_entry["status"] != "paused_for_approval":
+        if run_entry["status"] == "running":
+            return {"status": "already_running", "approval_status": req.approval_status}
         raise HTTPException(
             status_code=400,
             detail=f"Run is not paused for approval (current status: {run_entry['status']})",
@@ -297,6 +302,14 @@ def approve_run(run_id: str, req: ApproveRequest):
     run_entry["status"] = "running"
     graph = run_entry["graph"]
     config = run_entry["config"]
+
+    publish_to_subscribers(run_id, {
+        "type": "approval_resumed",
+        "event": "approval_resumed",
+        "run_id": run_id,
+        "decision": req.approval_status,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
 
     resume_command = Command(resume={"approval_status": req.approval_status})
 

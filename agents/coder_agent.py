@@ -26,7 +26,7 @@ _USE_MCP = os.environ.get("PIPELINE_USE_MCP_EXEC", "1") != "0"
 
 def _make_llm():
     return ChatOllama(
-        model="glm-5.3-flash:cloud",
+        model="gpt-oss:120b-cloud",
         base_url="https://ollama.com",
         client_kwargs={"headers": {"Authorization": f"Bearer {os.getenv('OLLAMA_API_KEY')}"}},
         temperature=0,
@@ -43,13 +43,20 @@ def _run_coro_sync(coro):
         return asyncio.run(coro)
 
     result_box = {}
+    error_box = {}
 
     def _runner():
-        result_box["value"] = asyncio.run(coro)
+        try:
+            result_box["value"] = asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001 - propagate exactly what happened
+            error_box["error"] = exc
 
     thread = threading.Thread(target=_runner)
     thread.start()
     thread.join()
+
+    if "error" in error_box:
+        raise error_box["error"]
     return result_box["value"]
 
 
@@ -67,6 +74,17 @@ def _execute(code: str, input_paths: dict, output_path: str, timeout: int, run_i
             )
             log_event(log_key, "coder_agent", "mcp_fallback", error=str(exc))
     return run_python_exec(code, input_paths, output_path, timeout=timeout, run_id=run_id)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip a leading/trailing markdown code fence, tolerating ```python, ```py,
+    or a bare ``` opener."""
+    code = text.strip()
+    for prefix in ("```python", "```py", "```"):
+        if code.startswith(prefix):
+            code = code[len(prefix):]
+            break
+    return code.removesuffix("```").strip()
 
 
 def coder_agent(
@@ -123,8 +141,8 @@ Task:
 
 Rules:
 - Read input files from `os.environ["INPUT_<KEY>"]` (e.g. `INPUT_DATASET`).
-- If generating plots with matplotlib/seaborn, ALWAYS use the headless Agg backend:
-  `import matplotlib; matplotlib.use('Agg')` BEFORE `import matplotlib.pyplot as plt`.
+- Do NOT generate visual plots, charts, or figures (no matplotlib/seaborn figures or image files). The pipeline is headless and the LLM cannot view images. Instead, compute and print detailed numerical summaries, correlation matrices, missing value tables, and distribution metrics directly to stdout, and write structured output (JSON/Parquet/CSV) to `OUTPUT_PATH`.
+- If matplotlib is imported by any third-party dependency, ALWAYS ensure headless operation: `import matplotlib; matplotlib.use('Agg')` BEFORE importing any plotting modules.
 - Write your primary result to `os.environ["OUTPUT_PATH"]` using the matching file format (e.g. `json.dump` if `.json`, `to_csv` if `.csv`, `to_parquet` if `.parquet`).
 - Ensure parent output directories exist: `os.makedirs(os.path.dirname(os.path.abspath(os.environ["OUTPUT_PATH"])), exist_ok=True)`.
 - Print concise findings and summary lines to stdout.
@@ -145,10 +163,18 @@ Output ONLY the Python code, no markdown fences, no commentary."""
             response_text = stream_text(
                 llm, messages, run_id=run_id, agent=f"coder_agent(attempt {attempt})",
             )
-        code = response_text.strip().removeprefix("```python").removesuffix("```").strip()
+        code = _strip_code_fences(response_text)
 
         with step_timer(log_key, "coder_agent", f"execute_attempt_{attempt}"):
-            result = _execute(code, input_paths, output_path, timeout, run_id)
+            if len(code) != 0:
+                result = _execute(code, input_paths, output_path, timeout, run_id)
+            else:
+                result = {
+                    "success": False,
+                    "stdout": "",
+                    "stderr": "Model returned empty code (nothing left after stripping code fences).",
+                    "output_path": None,
+                }
 
         log_event(log_key, "coder_agent", "attempt_result", attempt=attempt,
                   success=result["success"], code=code,

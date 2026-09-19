@@ -408,6 +408,10 @@ function handlePipelineEvent(evt) {
       handleApprovalRequired(evt);
       break;
 
+    case 'approval_resumed':
+      handleApprovalResumed(evt);
+      break;
+
     case 'report_ready':
       handleReportReady(evt);
       break;
@@ -1078,22 +1082,32 @@ function handleApprovalRequired(evt) {
     btnModify.disabled = true;
     btnReject.disabled = true;
 
+    const runIdToApprove = evt.run_id || currentRunId;
+    if (!runIdToApprove) {
+      alert('Error: No active run identifier found to approve.');
+      btnApprove.disabled = false;
+      btnModify.disabled = false;
+      btnReject.disabled = false;
+      return;
+    }
+
     try {
-      const res = await fetch(`/api/runs/${currentRunId}/approve`, {
+      const res = await fetch(`/api/runs/${runIdToApprove}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ approval_status: decision })
       });
 
       if (!res.ok) {
-        throw new Error('Approval request failed');
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || `Server returned HTTP ${res.status}`);
       }
 
       actionsContainer.classList.add('hidden');
       resultStatus.classList.remove('hidden');
       resultStatus.textContent = `✓ Submitted decision: ${decision.toUpperCase()} — resuming execution...`;
       resultStatus.className = 'approval-result-status text-xs font-semibold text-emerald-600 dark:text-emerald-400';
-      updateHeaderStatus(currentRunId, 'running');
+      updateHeaderStatus(runIdToApprove, 'running');
 
     } catch (err) {
       alert(`Error submitting decision: ${err.message}`);
@@ -1108,6 +1122,29 @@ function handleApprovalRequired(evt) {
   btnReject.addEventListener('click', () => sendApproval('reject'));
 
   contentArea.appendChild(panel);
+}
+
+function handleApprovalResumed(evt) {
+  const targetRunId = evt.run_id || currentRunId;
+  updateHeaderStatus(targetRunId, 'running');
+  const card = activeTurnCards['human_approval'];
+  if (card) {
+    const actionsContainer = card.querySelector('.approval-actions');
+    const resultStatus = card.querySelector('.approval-result-status');
+    if (actionsContainer) actionsContainer.classList.add('hidden');
+    if (resultStatus) {
+      resultStatus.classList.remove('hidden');
+      resultStatus.textContent = `✓ Decision: ${(evt.decision || 'approved').toUpperCase()} — Resumed`;
+      resultStatus.className = 'approval-result-status text-xs font-semibold text-emerald-600 dark:text-emerald-400';
+    }
+    const statusPill = card.querySelector('.status-pill');
+    if (statusPill) {
+      statusPill.innerHTML = `
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5"></span>
+        Approved
+      `;
+    }
+  }
 }
 
 // --------------------------------------------------------------------------

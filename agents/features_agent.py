@@ -86,6 +86,7 @@ def features_agent(state: AgentState) -> dict:
     def decide_next_step(condensed_history):
         context = {
             "profile": profile,
+            "eda_findings": state.get("eda_findings"),
             "eda_narrative": (state.get("eda_findings") or {}).get("narrative"),
             "target_column": state.get("target_column"),
             "task_type": state.get("task_type"),
@@ -99,6 +100,12 @@ def features_agent(state: AgentState) -> dict:
                           f"Address that feedback rather than repeating the same approach.")
         system_prompt = ("You are the Features agent. Decide the next feature-engineering "
                          "step, building on the CURRENT transformed dataset (not raw). "
+                         "Carefully review `eda_narrative` and `eda_findings` for high/low correlation "
+                         "pairs, missing values, skewness, and outliers. Prioritize: "
+                         "1) Handling missing values and imputation identified in EDA. "
+                         "2) Resolving multicollinearity (dropping or combining highly correlated features |r| > 0.7). "
+                         "3) Transforming skewed numerical distributions (log1p/Box-Cox). "
+                         "4) Encoding categorical columns. "
                          "Self-report honestly if a step could irreversibly lose "
                          "information. Stop once the feature set is ready for modeling."
                          + retry_note)

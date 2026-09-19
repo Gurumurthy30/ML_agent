@@ -22,6 +22,8 @@ from agents.reporter_agent import reporter_agent
 from tools.logger import log_event
 
 
+import os
+
 def human_approval_node(state: AgentState) -> dict:
     """Generic pause point — genuinely blocks graph execution until resumed with a
     human's decision. Does not decide anything itself."""
@@ -37,10 +39,19 @@ def human_approval_node(state: AgentState) -> dict:
     })
 
     log_event(run_id, "human_approval", "resumed", decision=decision)
-    return {
-        "approval_status": decision.get("approval_status"),
+    approval_status = decision.get("approval_status")
+    update = {
+        "approval_status": approval_status,
         "requires_human_approval": False,
     }
+
+    # If approved, adopt the proposed output dataset path from the reviewed feature plan
+    feature_plan = state.get("feature_plan") or {}
+    proposed_path = feature_plan.get("proposed_output_path")
+    if approval_status == "approved" and proposed_path and os.path.exists(proposed_path):
+        update["transformed_dataset_path"] = proposed_path
+
+    return update
 
 
 def route_after_features(state: AgentState) -> str:
@@ -52,10 +63,10 @@ def route_after_features(state: AgentState) -> str:
 
 
 def route_after_human_approval(state: AgentState) -> str:
-    # Approved/modify hand back to Features to continue from where it paused;
-    # reject sends control back to the Supervisor to decide what happens next
-    # (e.g. a tier-2 retry).
-    if state.get("approval_status") in ("approved", "modify"):
+    # If modify, hand back to Features to continue from where it paused with user modifications;
+    # if approved, the transformation is committed and supervisor takes over to route to Modeler;
+    # if rejected, supervisor decides what happens next (e.g. tier-2 retry or abort).
+    if state.get("approval_status") == "modify":
         return "features"
     return "supervisor"
 
