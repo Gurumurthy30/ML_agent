@@ -144,7 +144,8 @@ def modeler_agent(state: AgentState) -> dict:
             try:
                 return invoke_structured_robust(
                     llm, ModelStepDecision,
-                    [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+                    [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
+                    run_id=run_id, agent="modeler_agent"
                 )
             except Exception as exc:
                 logger.warning("Modeler decide_next_step failed (%s); using fallback decision", exc)

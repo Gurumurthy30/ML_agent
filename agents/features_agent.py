@@ -119,7 +119,8 @@ def features_agent(state: AgentState) -> dict:
             try:
                 return invoke_structured_robust(
                     llm, FeatureStepDecision,
-                    [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+                    [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
+                    run_id=run_id, agent="features_agent"
                 )
             except Exception as exc:
                 logger.warning("Features decide_next_step failed (%s); using fallback decision", exc)
@@ -167,7 +168,7 @@ def features_agent(state: AgentState) -> dict:
 
         is_destructive = decision.destructive_self_assessment or structural_destructive
         guided = bool(state.get("guided_mode"))
-        needs_approval = result["success"] and (guided or is_destructive)
+        needs_approval = result["success"] and guided
 
         record = {
             "iteration": iteration, "task_spec": decision.task_spec, **result,
@@ -217,16 +218,15 @@ def features_agent(state: AgentState) -> dict:
         "last_executed_agent": "features",
     }
 
-    # Hard block vs. advisory — two different mechanisms, do not conflate:
-    if hard_block_info["triggered"]:
-        update["requires_human_approval"] = True
-        update["approval_reason"] = hard_block_info["reason"]
-        update["feature_plan"] = hard_block_info["plan"]
-    elif loop_result["exit_reason"] != "llm_stop":
-        # Ceiling reached without the LLM's own stop -> advisory only, never blocks;
-        # best-so-far (current_path) is still written into state above.
-        update["requires_human_approval"] = True
-        update["approval_reason"] = "unresolved_exploration"
+    # Hard block vs. advisory — only ask permission in guided mode:
+    if bool(state.get("guided_mode")):
+        if hard_block_info["triggered"]:
+            update["requires_human_approval"] = True
+            update["approval_reason"] = hard_block_info["reason"]
+            update["feature_plan"] = hard_block_info["plan"]
+        elif loop_result["exit_reason"] != "llm_stop":
+            update["requires_human_approval"] = True
+            update["approval_reason"] = "unresolved_exploration"
 
     log_event(run_id, "features_agent", "loop_end",
               **{k: v for k, v in feature_set.items() if k != "steps"})

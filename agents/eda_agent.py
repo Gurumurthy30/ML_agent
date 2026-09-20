@@ -79,6 +79,7 @@ listed in `prior_analyses_this_run`. Stop once you understand the data well enou
 engineering. Never invent findings yourself — only decide what code should compute.
 
 CRITICAL RULES:
+0. Only do nessasery things don't do unwanted test or things.
 1. NO VISUAL PLOTS OR FIGURES: Do NOT propose scripts that plot charts, graphs, or use matplotlib/seaborn to render figures. The downstream LLM agents are text-only models and CANNOT see visual plots. Plotting wastes runtime and produces zero consumable signal.
 2. STATISTICAL & NUMERICAL SUMMARIES ONLY: Instead of plots, write task specifications that compute explicit numerical values and print structured tables to stdout:
    - Pairwise correlations: find all feature pairs with high correlation (|r| >= 0.70) as candidates for deduplication, low correlation features, and correlation of every feature with the target column.
@@ -92,7 +93,8 @@ CRITICAL RULES:
             try:
                 return invoke_structured_robust(
                     llm, EdaStepDecision,
-                    [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+                    [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
+                    run_id=run_id, agent="eda_agent"
                 )
             except Exception as exc:
                 logger.warning("EDA decide_next_step failed (%s); using fallback decision", exc)

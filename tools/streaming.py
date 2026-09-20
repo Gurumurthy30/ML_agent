@@ -53,7 +53,29 @@ def _flexible_construct(schema: Type[T], data: dict) -> T:
     return schema(**norm)
 
 
-def invoke_structured_robust(llm, schema: Type[T], messages: list) -> T:
+def _record_tokens(messages, output_obj, run_id: str = None, agent: str = "agent", total_usage: dict = None):
+    if not run_id:
+        return
+    try:
+        from tools import tracer
+        if total_usage and (total_usage.get("input_tokens") or total_usage.get("output_tokens")):
+            tin = int(total_usage.get("input_tokens") or 0)
+            tout = int(total_usage.get("output_tokens") or 0)
+        else:
+            prompt_chars = sum(len(str(getattr(m, "content", m))) for m in messages)
+            tin = max(1, prompt_chars // 4)
+            if isinstance(output_obj, str):
+                out_chars = len(output_obj)
+            else:
+                out_chars = len(str(getattr(output_obj, "__dict__", str(output_obj))))
+            tout = max(1, out_chars // 4) if out_chars else 0
+        cost_usd = round((tin * 0.0005 + tout * 0.0015) / 1000.0, 6)
+        tracer.record_event(run_id, agent, "llm_usage", tokens_in=tin, tokens_out=tout, cost_usd=cost_usd)
+    except Exception:
+        pass
+
+
+def invoke_structured_robust(llm, schema: Type[T], messages: list, run_id: str = None, agent: str = "agent") -> T:
     """
     Robust structured invoker that handles Ollama's casing quirks (e.g. edaStepDecision vs EdaStepDecision),
     direct JSON content generation, and flexible schema coercion.
@@ -62,24 +84,31 @@ def invoke_structured_robust(llm, schema: Type[T], messages: list) -> T:
     if hasattr(llm, "with_structured_output") and not hasattr(llm, "bind_tools"):
         if not hasattr(llm, "_cached_mock_structured"):
             llm._cached_mock_structured = llm.with_structured_output(schema)
-        return llm._cached_mock_structured.invoke(messages)
+        res = llm._cached_mock_structured.invoke(messages)
+        _record_tokens(messages, res, run_id, agent)
+        return res
 
     # 1. Attempt tool calling with case-insensitive and flexible mapping
     try:
         bound_llm = llm.bind_tools([schema])
         res = bound_llm.invoke(messages)
 
+        def _finish(data):
+            res = _flexible_construct(schema, data)
+            _record_tokens(messages, res, run_id, agent)
+            return res
+
         if hasattr(res, "tool_calls") and res.tool_calls:
             for tc in res.tool_calls:
                 tc_name = tc.get("name", "")
                 if tc_name.lower() == schema.__name__.lower():
                     try:
-                        return _flexible_construct(schema, tc.get("args", {}))
+                        return _finish(tc.get("args", {}))
                     except Exception:
                         pass
             if len(res.tool_calls) == 1:
                 try:
-                    return _flexible_construct(schema, res.tool_calls[0].get("args", {}))
+                    return _finish(res.tool_calls[0].get("args", {}))
                 except Exception:
                     pass
 
@@ -97,7 +126,7 @@ def invoke_structured_robust(llm, schema: Type[T], messages: list) -> T:
             try:
                 data = json.loads(clean)
                 if isinstance(data, dict):
-                    return _flexible_construct(schema, data)
+                    return _finish(data)
             except Exception:
                 pass
 
@@ -106,7 +135,7 @@ def invoke_structured_robust(llm, schema: Type[T], messages: list) -> T:
                 try:
                     data = json.loads(m.group(1))
                     if isinstance(data, dict):
-                        return _flexible_construct(schema, data)
+                        return _finish(data)
                 except Exception:
                     pass
     except Exception:
@@ -125,12 +154,16 @@ def invoke_structured_robust(llm, schema: Type[T], messages: list) -> T:
         content2 = getattr(res2, "content", "").strip()
         m2 = re.search(r'(\{[\s\S]*\})', content2)
         if m2:
-            return _flexible_construct(schema, json.loads(m2.group(1)))
+            res_obj = _flexible_construct(schema, json.loads(m2.group(1)))
+            _record_tokens(fallback_messages, res_obj, run_id, agent)
+            return res_obj
     except Exception:
         pass
 
     # 4. Final attempt: standard with_structured_output
-    return llm.with_structured_output(schema).invoke(messages)
+    res_final = llm.with_structured_output(schema).invoke(messages)
+    _record_tokens(messages, res_final, run_id, agent)
+    return res_final
 
 
 def stream_text(llm, messages, run_id: str = None, agent: str = "agent", echo: bool = True, on_token = None) -> str:
@@ -144,6 +177,7 @@ def stream_text(llm, messages, run_id: str = None, agent: str = "agent", echo: b
     """
     logger = get_logger(run_id) if run_id else None
     chunks = []
+    total_usage = None
     try:
         if echo:
             try:
@@ -152,6 +186,8 @@ def stream_text(llm, messages, run_id: str = None, agent: str = "agent", echo: b
             except Exception:
                 pass
         for chunk in llm.stream(messages):
+            if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                total_usage = chunk.usage_metadata
             piece = getattr(chunk, "content", None) or (chunk if isinstance(chunk, str) else "")
             if piece:
                 chunks.append(piece)
@@ -183,11 +219,13 @@ def stream_text(llm, messages, run_id: str = None, agent: str = "agent", echo: b
         text = "".join(chunks)
         if not text:
             raise ValueError("stream produced no content")
+        _record_tokens(messages, text, run_id, agent, total_usage=total_usage)
     except Exception as exc:
         if logger:
             logger.warning("%s: streaming failed (%s), falling back to invoke()", agent, exc)
         response = llm.invoke(messages)
         text = response.content
+        _record_tokens(messages, text, run_id, agent, total_usage=getattr(response, "usage_metadata", None))
 
     if logger:
         logger.debug("%s: streamed %d chars", agent, len(text))

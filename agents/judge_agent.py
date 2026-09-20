@@ -98,7 +98,8 @@ forever chasing marginal gains."""
         try:
             verdict = invoke_structured_robust(
                 llm, JudgeVerdict,
-                [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+                [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
+                run_id=run_id, agent="judge_agent"
             )
         except Exception as exc:
             logger.warning("Judge LLM call failed (%s); using fallback acceptance verdict", exc)

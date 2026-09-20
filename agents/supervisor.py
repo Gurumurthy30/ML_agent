@@ -403,7 +403,8 @@ Respond with a single structured decision, not prose."""
         try:
             decision = invoke_structured_robust(
                 llm, SupervisorDecision,
-                [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+                [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
+                run_id=run_id, agent="supervisor"
             )
         except Exception as exc:
             logger.warning("Supervisor LLM call failed (%s); using deterministic routing fallback", exc)

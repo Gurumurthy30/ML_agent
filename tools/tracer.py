@@ -586,10 +586,17 @@ def get_run_attempts(run_id: str) -> List[Dict[str, Any]]:
     baseline = None
 
     for ev in events:
+        parent = ev.get("parent_agent")
+        agent = ev.get("agent")
+        if parent in ("eda_agent", "features_agent") or agent in ("eda_agent", "features_agent"):
+            continue
+
         evt = ev.get("event") or ev.get("type")
         if evt in ("attempt_result", "model_evaluated", "candidate_evaluated") or (
             ev.get("agent") == "coder_agent" and "cv_score" in ev
         ):
+            if ev.get("agent") == "coder_agent" and "cv_score" not in ev and not ev.get("model_family") and not ev.get("model_name"):
+                continue
             val = to_float(ev.get("cv_score") or ev.get("metric_value"))
             if baseline is None and val is not None:
                 baseline = val

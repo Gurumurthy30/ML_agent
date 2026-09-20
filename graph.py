@@ -55,9 +55,7 @@ def human_approval_node(state: AgentState) -> dict:
 
 
 def route_after_features(state: AgentState) -> str:
-    if state.get("requires_human_approval") and state.get("approval_reason") in (
-        "destructive_action", "guided_mode"
-    ):
+    if state.get("requires_human_approval") and bool(state.get("guided_mode")):
         return "human_approval"
     return "supervisor"
 

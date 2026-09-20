@@ -184,7 +184,8 @@ Output ONLY the Python code, no markdown fences, no commentary."""
                     "output_path": None,
                 }
 
-        log_event(log_key, "coder_agent", "attempt_result", attempt=attempt,
+        event_name = "attempt_result" if parent_agent == "modeler_agent" else "code_execution"
+        log_event(log_key, "coder_agent", event_name, attempt=attempt,
                   success=result["success"], code=code,
                   stdout=result.get("stdout", ""), stderr=result.get("stderr", ""),
                   parent_agent=parent_agent, parent_iteration=parent_iteration)
