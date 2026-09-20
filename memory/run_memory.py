@@ -24,6 +24,7 @@ import hashlib
 from typing import Optional
 
 from tools.logger import get_logger, log_event
+from utils.safe import safe_div
 
 _STORE_DIR = os.environ.get("PIPELINE_MEMORY_DIR", "memory/store")
 os.makedirs(_STORE_DIR, exist_ok=True)
@@ -65,9 +66,9 @@ def _cosine(a: list, b: list) -> float:
         # can't compare meaningfully, treat as unrelated rather than erroring.
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a)) or 1.0
-    norm_b = math.sqrt(sum(y * y for y in b)) or 1.0
-    return dot / (norm_a * norm_b)
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    return safe_div(dot, norm_a * norm_b, default=0.0)
 
 
 def _read_all() -> list:

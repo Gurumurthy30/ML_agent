@@ -47,10 +47,13 @@ class JudgeVerdict(BaseModel):
 from tools.streaming import invoke_structured_robust
 
 
+_make_llm = get_llm
+
+
 def judge_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
-    llm = get_llm()
+    llm = _make_llm()
 
     profile = state.get("profile", {})
     memory_query = (f"Judging a {state.get('task_type', 'unknown')} run, "
@@ -128,5 +131,20 @@ forever chasing marginal gains."""
         update["retry_counts"] = retry_counts
     else:
         update["retry_tier"] = 0
+
+    try:
+        from agents.adaptive_controller import adaptive_controller
+        cand_models = state.get("candidate_models") or []
+        best_cand = cand_models[-1] if cand_models else {}
+        adaptive_controller.ideas_registry.record_idea(
+            run_id=run_id,
+            phase="judge",
+            tier=verdict.retry_tier or 1,
+            idea_summary=f"Model: {best_cand.get('model_family', 'unknown')} with score {state.get('best_metric')}",
+            details={"feedback": verdict.feedback, "reasoning": verdict.reasoning},
+            outcome="rejected" if verdict.verdict == "reject" else "accepted",
+        )
+    except Exception as exc:
+        logger.debug("Failed recording idea to adaptive controller: %s", exc)
 
     return update

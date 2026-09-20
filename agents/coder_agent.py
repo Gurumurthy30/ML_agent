@@ -55,10 +55,14 @@ def _run_coro_sync(coro):
     return result_box["value"]
 
 
+_make_llm = lambda: get_llm(large=True)
+
+
 def _execute(code: str, input_paths: dict, output_path: str, timeout: int, run_id: str) -> dict:
     """Execute via MCP if enabled, falling back to the direct call on any failure."""
     log_key = run_id or "coder_agent_unscoped"
-    if _USE_MCP:
+    use_mcp = globals().get("_USE_MCP", _USE_MCP)
+    if use_mcp:
         try:
             return _run_coro_sync(
                 run_python_exec_via_mcp(code, input_paths, output_path, timeout=timeout, run_id=run_id)
@@ -68,7 +72,8 @@ def _execute(code: str, input_paths: dict, output_path: str, timeout: int, run_i
                 "coder_agent: MCP exec failed (%s), falling back to direct call", exc
             )
             log_event(log_key, "coder_agent", "mcp_fallback", error=str(exc))
-    return run_python_exec(code, input_paths, output_path, timeout=timeout, run_id=run_id)
+    exec_fn = globals().get("run_python_exec", run_python_exec)
+    return exec_fn(code, input_paths, output_path, timeout=timeout, run_id=run_id)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -115,7 +120,7 @@ def coder_agent(
     if "dataset" in input_paths and "dataset_dir" not in input_paths:
         input_paths["dataset_dir"] = os.path.dirname(os.path.abspath(input_paths["dataset"])) or "."
 
-    llm = get_llm(large=True)  # Coder uses the larger model for better code generation
+    llm = _make_llm()  # Coder uses the larger model for better code generation
 
     system_prompt = f"""You are the Coder sub-agent. Write a complete, self-contained Python
 script that accomplishes the task below. Read inputs from paths given in environment variables

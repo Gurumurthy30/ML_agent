@@ -58,10 +58,13 @@ class FeatureStepDecision(BaseModel):
 from tools.streaming import invoke_structured_robust
 
 
+_make_llm = get_llm
+
+
 def features_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
-    llm = get_llm()
+    llm = _make_llm()
 
     profile = state.get("profile", {})
     ceiling = compute_iteration_ceiling(profile)

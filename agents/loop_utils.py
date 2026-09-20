@@ -57,6 +57,7 @@ def run_exploration_loop(
     decide_next_step,
     execute_step,
     plateau_check=None,
+    higher_is_better: bool = True,
 ) -> dict:
     """
     Shared driver for the EDA / Features / Modeler exploration loop.
@@ -103,12 +104,12 @@ def run_exploration_loop(
         log_event(
             run_id, agent_name, "iteration_result",
             iteration=iteration,
-            agent=agent_name,
             metric=step_result.get("metric"),
             metric_name=step_result.get("metric_name"),
             metric_delta=step_result.get("metric_delta"),
             is_improvement=step_result.get("is_improvement"),
             is_stall=step_result.get("is_stall", False),
+            higher_is_better=higher_is_better,
             task_spec=getattr(decision, "task_spec", None),
             summary=step_result.get("condensed"),
         )

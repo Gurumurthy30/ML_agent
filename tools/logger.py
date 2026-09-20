@@ -96,23 +96,30 @@ def _events_path(run_id: str) -> str:
 
 def log_event(run_id: str, agent: str, event_type: str, **payload) -> None:
     """Append one structured, machine-readable event to this run's trace."""
-    record = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "run_id": run_id,
-        "agent": agent,
-        "event": event_type,
-        **payload,
-    }
-    with open(_events_path(run_id), "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, default=str) + "\n")
-
-    publish_to_subscribers(run_id, record)
+    try:
+        from tools.tracer import record_event
+        record_event(run_id=run_id, agent=agent, event_type=event_type, **payload)
+    except Exception as exc:
+        # Fallback to direct jsonl writing if tracer encounters an issue
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "run_id": run_id,
+            "agent": agent,
+            "event": event_type,
+            **payload,
+        }
+        from utils.safe import safe_json
+        clean_record = safe_json(record)
+        with open(_events_path(run_id), "a", encoding="utf-8") as f:
+            f.write(json.dumps(clean_record) + "\n")
+        publish_to_subscribers(run_id, clean_record)
 
     # Mirror a short human-readable line into the normal logger too (trimmed so a
     # big payload like full_history doesn't spam the console/log file).
+    from utils.safe import safe_json
     preview = {k: v for k, v in payload.items() if k not in ("full_history", "code")}
     get_logger(run_id).debug(
-        "[%s] %s | %s", agent, event_type, json.dumps(preview, default=str)[:500]
+        "[%s] %s | %s", agent, event_type, json.dumps(safe_json(preview))[:500]
     )
 
 

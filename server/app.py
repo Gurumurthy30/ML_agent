@@ -26,21 +26,24 @@ import os
 import queue
 import threading
 import time
+import traceback as _traceback
 from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langgraph.types import Command
 from pydantic import BaseModel
 
 from state import build_initial_state
 from tools.logger import get_logger, log_event, publish_to_subscribers, read_events, subscribe, unsubscribe
+from tools import tracer
+from utils.safe import safe_json
 
 logger = logging.getLogger("server.app")
 logging.basicConfig(level=logging.INFO)
@@ -78,6 +81,22 @@ os.makedirs(_UPLOAD_DIR, exist_ok=True)
 # Allowed dataset extensions for upload
 _ALLOWED_EXTS = {".csv", ".parquet", ".pq"}
 _MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+
+# Intent descriptions emitted on node_start events so the UI shows "what this node is about to do"
+_NODE_INTENTS = {
+    "supervisor": "Analyse pipeline state and decide which specialist agent runs next",
+    "profiler": "Profile the dataset — infer types, statistics, quality flags, and recommended metric",
+    "eda_agent": "Explore the dataset — compute correlations, distributions, and statistical insights",
+    "features": "Engineer feature transformations and compute a structural diff of the dataset",
+    "modeler": "Search model families, tune hyperparameters internally, and select the best CV score",
+    "judge": "Evaluate result quality and decide whether to accept or retry at a specific tier",
+    "human_approval": "Pause for human review of a proposed feature transformation or escalation decision",
+    "reporter": "Synthesise the full pipeline run into a structured Markdown report",
+}
+
+# Per-run node start timestamps for duration_ms computation
+_NODE_START_TIMES: dict[str, dict[str, float]] = {}
+_NODE_TIMES_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +169,17 @@ class ApproveRequest(BaseModel):
     approval_status: Literal["approved", "modify", "reject"]
 
 
+class ControlRequest(BaseModel):
+    action: Literal["pause", "resume", "stop", "escalate", "retry_node"]
+    prompt_override: Optional[str] = None
+    node: Optional[str] = None
+
+
+class CompareRequest(BaseModel):
+    run_id_a: str
+    run_id_b: str
+
+
 # ---------------------------------------------------------------------------
 # Event translation
 # ---------------------------------------------------------------------------
@@ -184,8 +214,8 @@ def translate_event(raw: dict) -> dict:
         canonical_type = "report_ready"
     elif agent == "profiler_agent" and event_type == "profile_ready":
         canonical_type = "profile_ready"
-    elif agent == "supervisor" and event_type == "routed":
-        canonical_type = "supervisor_routed"
+    elif agent == "supervisor" and event_type in ("routed", "supervisor_decision"):
+        canonical_type = "supervisor_decision"
     elif agent == "coder_agent" and event_type == "attempt_result":
         canonical_type = "attempt_result"
         if "stdout" in data:
@@ -195,8 +225,11 @@ def translate_event(raw: dict) -> dict:
     elif agent == "coder_agent" and event_type == "mcp_fallback":
         canonical_type = "mcp_fallback"
     elif event_type in ("retry_cap_override", "stalled_retry_escalation",
-                        "global_iteration_ceiling", "iteration_result", "run_stop_reason"):
-        canonical_type = event_type  # pass through for raw event log & UI visibility
+                        "global_iteration_ceiling", "iteration_result", "run_stop_reason",
+                        "supervisor_decision", "node_start", "node_end",
+                        "approval_required", "run_complete", "run_error", "run_stopped",
+                        "approval_resumed", "duplicate_idea_rejected"):
+        canonical_type = event_type  # pass through
 
     data["type"] = canonical_type
     data["event"] = canonical_type
@@ -206,50 +239,80 @@ def translate_event(raw: dict) -> dict:
 def _execute_graph_stream(run_id: str, graph, stream_input, config: dict):
     """
     Stream graph execution, emitting node_start, node_end, and detecting pauses/completion.
+    All lifecycle events are routed through tracer.record_event() so they receive an
+    event_id, seq number, and are persisted to JSONL + SQLite for SSE replay.
     """
+    ctrl = tracer.get_run_control(run_id)
+    start_time = time.time()
     try:
         for mode, payload in graph.stream(stream_input, config=config, stream_mode=["updates", "debug"]):
+            if not ctrl.wait_if_paused():
+                break
+            if ctrl.stopped:
+                tracer.record_event(run_id, "server", "run_stopped", reason="user_stopped", stop_reason="user_stopped")
+                break
+
             if mode == "debug" and payload.get("type") == "task":
                 node_name = payload.get("payload", {}).get("name")
                 if node_name and node_name not in ("__start__", "__end__"):
-                    publish_to_subscribers(run_id, {
-                        "type": "node_start",
-                        "event": "node_start",
-                        "node": node_name,
-                        "agent": node_name,
-                        "run_id": run_id,
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                    })
+                    with _NODE_TIMES_LOCK:
+                        _NODE_START_TIMES.setdefault(run_id, {})[node_name] = time.time()
+                    tracer.record_event(
+                        run_id, node_name, "node_start",
+                        intent=_NODE_INTENTS.get(node_name, f"Running {node_name}"),
+                        node=node_name,
+                        state_replace=False,
+                    )
             elif mode == "updates":
                 for node_name, state_update in payload.items():
                     if node_name == "__interrupt__":
                         continue
-                    publish_to_subscribers(run_id, {
-                        "type": "node_end",
-                        "event": "node_end",
-                        "node": node_name,
-                        "agent": node_name,
-                        "run_id": run_id,
-                        "state_update": state_update,
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                    })
+                    # Compute duration_ms if we recorded a start time
+                    duration_ms = None
+                    with _NODE_TIMES_LOCK:
+                        t0 = _NODE_START_TIMES.get(run_id, {}).pop(node_name, None)
+                    if t0 is not None:
+                        duration_ms = int((time.time() - t0) * 1000)
+
+                    # Generate a summary line from the keys written
+                    if isinstance(state_update, dict):
+                        written_keys = [k for k, v in state_update.items() if v is not None]
+                        summary = f"{node_name} wrote: {', '.join(written_keys[:6])}" if written_keys else f"{node_name} completed"
+                    else:
+                        summary = f"{node_name} completed"
+
+                    tracer.record_event(
+                        run_id, node_name, "node_end",
+                        duration_ms=duration_ms,
+                        summary=summary,
+                        node=node_name,
+                        state_update=safe_json(state_update) if isinstance(state_update, dict) else None,
+                        state_replace=False,
+                    )
+
                     if node_name == "reporter" and isinstance(state_update, dict):
                         if state_update.get("report"):
                             with _RUNS_LOCK:
                                 RUNS[run_id]["report"] = state_update["report"]
                                 RUNS[run_id]["artifact_path"] = state_update.get("artifact_path")
-                            publish_to_subscribers(run_id, {
-                                "type": "report_ready",
-                                "event": "report_ready",
-                                "run_id": run_id,
-                                "report": state_update["report"],
-                                "artifact_path": state_update.get("artifact_path"),
-                                "ts": datetime.now(timezone.utc).isoformat(),
-                            })
+                            tracer.record_event(
+                                run_id, "reporter", "report_ready",
+                                report=state_update["report"],
+                                artifact_path=state_update.get("artifact_path"),
+                            )
 
         # Check final graph state after stream exits
         final_state = graph.get_state(config)
-        if final_state.next:
+        duration_s = round(time.time() - start_time, 2)
+
+        if ctrl.stopped:
+            with _RUNS_LOCK:
+                RUNS[run_id]["status"] = "stopped"
+                RUNS[run_id]["stop_reason"] = "user_stopped"
+            tracer.update_run_status(run_id, status="stopped", stop_reason="user_stopped", duration_s=duration_s)
+            tracer.record_event(run_id, "server", "run_stopped",
+                                stop_reason="user_stopped", duration_ms=int(duration_s * 1000))
+        elif final_state.next:
             # Paused at interrupt (e.g. human_approval)
             reason = final_state.values.get("approval_reason")
             feature_plan = final_state.values.get("feature_plan")
@@ -259,55 +322,52 @@ def _execute_graph_stream(run_id: str, graph, stream_input, config: dict):
             with _RUNS_LOCK:
                 RUNS[run_id]["status"] = "paused_for_approval"
                 RUNS[run_id]["stop_reason"] = stop_reason
-            publish_to_subscribers(run_id, {
-                "type": "approval_required",
-                "event": "approval_required",
-                "run_id": run_id,
-                "reason": reason,
-                "stop_reason": stop_reason,
-                "feature_plan": feature_plan,
-                "ts": datetime.now(timezone.utc).isoformat(),
-            })
+            tracer.update_run_status(run_id, status="paused_for_approval", stop_reason=stop_reason, duration_s=duration_s)
+            tracer.record_event(
+                run_id, "server", "approval_required",
+                approval_reason=reason,
+                reason=reason,
+                stop_reason=stop_reason,
+                feature_plan=safe_json(feature_plan),
+            )
         else:
             # Fully completed
             stop_reason = final_state.values.get("stop_reason") or "converged"
+            best_score = final_state.values.get("best_score")
             with _RUNS_LOCK:
                 RUNS[run_id]["status"] = "completed"
                 RUNS[run_id]["stop_reason"] = stop_reason
                 if not RUNS[run_id].get("report") and final_state.values.get("report"):
                     RUNS[run_id]["report"] = final_state.values.get("report")
                     RUNS[run_id]["artifact_path"] = final_state.values.get("artifact_path")
-            report = RUNS[run_id].get("report")
-            if report:
-                publish_to_subscribers(run_id, {
-                    "type": "report_ready",
-                    "event": "report_ready",
-                    "run_id": run_id,
-                    "report": report,
-                    "artifact_path": RUNS[run_id].get("artifact_path"),
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                })
-            publish_to_subscribers(run_id, {
-                "type": "run_complete",
-                "event": "run_complete",
-                "run_id": run_id,
-                "stop_reason": stop_reason,
-                "ts": datetime.now(timezone.utc).isoformat(),
-            })
+            tracer.update_run_status(run_id, status="completed", stop_reason=stop_reason, best_score=best_score, duration_s=duration_s)
+            # Final state snapshot for UI browser-refresh
+            final_vals = safe_json(dict(final_state.values)) if final_state.values else {}
+            tracer.record_event(
+                run_id, "server", "run_complete",
+                stop_reason=stop_reason,
+                state_update=final_vals,
+                state_replace=True,
+                duration_ms=int(duration_s * 1000),
+            )
     except Exception as exc:
         logger.exception("Error executing pipeline run %s: %s", run_id, exc)
+        duration_s = round(time.time() - start_time, 2)
+        tb = _traceback.format_exc()
+        err_sig = tracer.compute_error_signature(type(exc).__name__, str(exc))
         with _RUNS_LOCK:
             RUNS[run_id]["status"] = "error"
             RUNS[run_id]["stop_reason"] = "errored"
             RUNS[run_id]["error"] = str(exc)
-        publish_to_subscribers(run_id, {
-            "type": "run_error",
-            "event": "run_error",
-            "run_id": run_id,
-            "stop_reason": "errored",
-            "error": str(exc),
-            "ts": datetime.now(timezone.utc).isoformat(),
-        })
+        tracer.update_run_status(run_id, status="error", stop_reason="errored", duration_s=duration_s)
+        tracer.record_event(
+            run_id, "server", "run_error",
+            stop_reason="errored",
+            error=str(exc),
+            error_trace=tb,
+            error_signature=err_sig,
+            duration_ms=int(duration_s * 1000),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +413,17 @@ def create_run(req: CreateRunRequest):
         RUNS[run_id] = run_entry
         _evict_old_runs()
 
+    # Register run in SQLite index
+    try:
+        tracer.register_run(
+            run_id=run_id,
+            dataset_path=req.dataset_path,
+            mode=req.mode,
+            guided_mode=req.guided_mode,
+        )
+    except Exception as exc:
+        logger.warning("Failed to register run in SQLite: %s", exc)
+
     thread = threading.Thread(
         target=_execute_graph_stream,
         args=(run_id, graph, initial_state, config),
@@ -365,30 +436,55 @@ def create_run(req: CreateRunRequest):
 
 
 @app.get("/api/runs/{run_id}/stream")
-async def stream_run_events(run_id: str):
+@app.get("/api/runs/{run_id}/events/stream")
+async def stream_run_events(
+    run_id: str,
+    request: Request,
+    last_event_id: Optional[str] = Query(None),
+):
     """
     Server-Sent Events endpoint streaming all structured logs, node changes,
     tokens, verdicts, approvals, and report ready notifications for a run.
+    Supports reconnection and catch-up replay via Last-Event-ID header or query param.
     """
     with _RUNS_LOCK:
         run_exists = run_id in RUNS
-    if not run_exists:
+    if not run_exists and not tracer.get_run(run_id):
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    client_last_id = request.headers.get("Last-Event-ID") or last_event_id
+    since_seq = 0
+    if client_last_id:
+        try:
+            parts = str(client_last_id).split("_")
+            since_seq = int(parts[-1])
+        except Exception:
+            since_seq = 0
 
     q = subscribe(run_id)
 
     async def event_generator():
         try:
+            # 1. Replay missed events from SQLite / disk if reconnecting
+            if since_seq > 0:
+                past_events = tracer.get_run_events(run_id, since_seq=since_seq)
+                for pe in past_events:
+                    translated = translate_event(pe)
+                    ev_id = translated.get("event_id", f"{run_id}_{translated.get('seq', 0):05d}")
+                    ev_type = translated.get("type", "message")
+                    yield f"id: {ev_id}\nevent: {ev_type}\ndata: {json.dumps(safe_json(translated))}\n\n"
+
+            # 2. Live streaming from queue
             while True:
                 try:
-                    # Non-blocking wait in thread pool with 10s timeout for keep-alive ping
                     item = await asyncio.to_thread(q.get, timeout=10.0)
                     translated = translate_event(item)
-                    yield f"data: {json.dumps(translated, default=str)}\n\n"
-                    if translated.get("type") in ("run_complete", "run_error"):
+                    ev_id = translated.get("event_id", f"{run_id}_{translated.get('seq', 0):05d}")
+                    ev_type = translated.get("type", "message")
+                    yield f"id: {ev_id}\nevent: {ev_type}\ndata: {json.dumps(safe_json(translated))}\n\n"
+                    if translated.get("type") in ("run_complete", "run_error", "run_stopped"):
                         break
                 except queue.Empty:
-                    # Keep-alive comment so browser connection stays alive during slow LLM calls
                     yield ": ping\n\n"
         finally:
             unsubscribe(run_id, q)
@@ -418,7 +514,12 @@ def approve_run(run_id: str, req: ApproveRequest):
             detail=f"Run '{run_id}' not found in active session (the server may have been restarted).",
         )
 
-    if run_entry["status"] != "paused_for_approval":
+    graph = run_entry["graph"]
+    config = run_entry["config"]
+    curr_state = graph.get_state(config)
+    is_interrupted = bool(curr_state.next)
+
+    if not is_interrupted and run_entry["status"] != "paused_for_approval":
         if run_entry["status"] == "running":
             return {"status": "already_running", "approval_status": req.approval_status}
         raise HTTPException(
@@ -432,13 +533,10 @@ def approve_run(run_id: str, req: ApproveRequest):
     graph = run_entry["graph"]
     config = run_entry["config"]
 
-    publish_to_subscribers(run_id, {
-        "type": "approval_resumed",
-        "event": "approval_resumed",
-        "run_id": run_id,
-        "decision": req.approval_status,
-        "ts": datetime.now(timezone.utc).isoformat(),
-    })
+    tracer.record_event(
+        run_id, "server", "approval_resumed",
+        decision=req.approval_status,
+    )
 
     resume_command = Command(resume={"approval_status": req.approval_status})
 
@@ -473,9 +571,16 @@ def get_run_report(run_id: str):
 def list_runs():
     """List all tracked runs with metadata for the UI sidebar."""
     with _RUNS_LOCK:
-        runs_snapshot = list(RUNS.values())
-    return [
-        {
+        mem_runs = {r["run_id"]: r for r in RUNS.values()}
+
+    db_runs = tracer.list_runs(limit=50)
+    result = []
+    seen = set()
+
+    # Prioritize active in-memory runs first
+    for r in mem_runs.values():
+        seen.add(r["run_id"])
+        result.append({
             "run_id": r["run_id"],
             "status": r["status"],
             "stop_reason": r.get("stop_reason"),
@@ -484,9 +589,150 @@ def list_runs():
             "guided_mode": r["guided_mode"],
             "has_report": bool(r.get("report")),
             "created_at": r["created_at"],
-        }
-        for r in runs_snapshot
-    ]
+        })
+
+    # Add historical runs from SQLite
+    for dbr in db_runs:
+        rid = dbr["run_id"]
+        if rid not in seen:
+            seen.add(rid)
+            result.append({
+                "run_id": rid,
+                "status": dbr.get("status", "unknown"),
+                "stop_reason": dbr.get("stop_reason"),
+                "dataset_path": dbr.get("dataset_path", ""),
+                "mode": dbr.get("mode", "full_pipeline"),
+                "guided_mode": bool(dbr.get("guided_mode")),
+                "best_score": dbr.get("best_score"),
+                "has_report": os.path.exists(os.path.join("artifacts", "reports", f"{rid}_report.md")),
+                "created_at": dbr.get("created_at", ""),
+            })
+
+    return result
+
+
+@app.get("/api/runs/{run_id}")
+def get_run_details(run_id: str):
+    """Retrieve full status, best score, resource metrics, and metadata for a run."""
+    with _RUNS_LOCK:
+        mem = RUNS.get(run_id)
+    db_run = tracer.get_run(run_id) or {}
+    if not mem and not db_run:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    status = (mem.get("status") if mem else None) or db_run.get("status", "unknown")
+    stop_reason = (mem.get("stop_reason") if mem else None) or db_run.get("stop_reason")
+    report = (mem.get("report") if mem else None)
+    artifact_path = (mem.get("artifact_path") if mem else None)
+
+    if not report:
+        report_file = os.path.join("artifacts", "reports", f"{run_id}_report.md")
+        if os.path.exists(report_file):
+            try:
+                with open(report_file, "r", encoding="utf-8") as f:
+                    report = f.read()
+            except Exception:
+                pass
+
+    return {
+        "run_id": run_id,
+        "status": status,
+        "stop_reason": stop_reason,
+        "dataset_path": (mem.get("dataset_path") if mem else None) or db_run.get("dataset_path"),
+        "mode": (mem.get("mode") if mem else None) or db_run.get("mode"),
+        "guided_mode": (mem.get("guided_mode") if mem else None) or bool(db_run.get("guided_mode")),
+        "best_score": db_run.get("best_score"),
+        "baseline_score": db_run.get("baseline_score"),
+        "total_attempts": db_run.get("total_attempts", 0),
+        "total_tokens_in": db_run.get("total_tokens_in", 0),
+        "total_tokens_out": db_run.get("total_tokens_out", 0),
+        "total_cost_usd": db_run.get("total_cost_usd", 0.0),
+        "duration_s": db_run.get("duration_s", 0.0),
+        "error_count": db_run.get("error_count", 0),
+        "has_report": bool(report),
+        "report": report,
+        "artifact_path": artifact_path,
+        "created_at": (mem.get("created_at") if mem else None) or db_run.get("created_at"),
+    }
+
+
+@app.get("/api/runs/{run_id}/events")
+def get_run_events_api(run_id: str, since_seq: int = 0, limit: Optional[int] = None):
+    """Retrieve structured events for run, supporting incremental polling / replay."""
+    return tracer.get_run_events(run_id, since_seq=since_seq, limit=limit)
+
+
+@app.get("/api/runs/{run_id}/attempts")
+def get_run_attempts_api(run_id: str):
+    """Retrieve structured model/feature attempt ledger for the run."""
+    return tracer.get_run_attempts(run_id)
+
+
+@app.get("/api/runs/{run_id}/errors")
+def get_run_errors_api(run_id: str):
+    """Retrieve aggregated error center grouped by signature with loop detection."""
+    return tracer.get_run_errors(run_id)
+
+
+@app.post("/api/runs/{run_id}/control")
+def control_run_api(run_id: str, req: ControlRequest):
+    """Interactive human-in-the-loop control (pause, resume, stop, escalate, retry_node)."""
+    ctrl = tracer.get_run_control(run_id)
+    if req.action == "pause":
+        ctrl.pause()
+        tracer.record_event(run_id, "control", "run_paused", intent="User requested pause")
+        with _RUNS_LOCK:
+            if run_id in RUNS:
+                RUNS[run_id]["status"] = "paused"
+        tracer.update_run_status(run_id, status="paused")
+        return {"status": "paused", "run_id": run_id}
+    elif req.action == "resume":
+        ctrl.resume()
+        tracer.record_event(run_id, "control", "run_resumed", intent="User requested resume")
+        with _RUNS_LOCK:
+            if run_id in RUNS and RUNS[run_id].get("status") != "paused_for_approval":
+                RUNS[run_id]["status"] = "running"
+        db_run = tracer.get_run(run_id)
+        if db_run and db_run.get("status") != "paused_for_approval":
+            tracer.update_run_status(run_id, status="running")
+        return {"status": "resumed", "run_id": run_id}
+    elif req.action == "stop":
+        ctrl.stop()
+        tracer.record_event(run_id, "control", "run_stopped", intent="User requested emergency stop")
+        with _RUNS_LOCK:
+            if run_id in RUNS:
+                RUNS[run_id]["status"] = "stopped"
+                RUNS[run_id]["stop_reason"] = "user_stopped"
+        tracer.update_run_status(run_id, status="stopped", stop_reason="user_stopped")
+        return {"status": "stopped", "run_id": run_id}
+    elif req.action == "escalate":
+        ctrl.escalate()
+        tracer.record_event(run_id, "control", "force_escalate", intent="User requested force escalation to next tier")
+        return {"status": "escalated", "run_id": run_id}
+    elif req.action == "retry_node":
+        ctrl.set_prompt_override(req.prompt_override or "", req.node)
+        tracer.record_event(run_id, "control", "retry_node", node=req.node, prompt_override=req.prompt_override)
+        return {"status": "retry_scheduled", "run_id": run_id, "node": req.node}
+    raise HTTPException(status_code=400, detail=f"Unknown control action '{req.action}'")
+
+
+@app.post("/api/runs/compare")
+def compare_runs_api(req: CompareRequest):
+    """Side-by-side run comparison for configs, metrics, tokens, and best code."""
+    return tracer.compare_runs(req.run_id_a, req.run_id_b)
+
+
+@app.get("/api/runs/{run_id}/export")
+def export_run_bundle_api(run_id: str):
+    """Download full run debug bundle as a ZIP file."""
+    zip_path = tracer.export_run_bundle(run_id)
+    if not os.path.exists(zip_path):
+        raise HTTPException(status_code=404, detail=f"Export bundle could not be generated for {run_id}")
+    return FileResponse(
+        path=zip_path,
+        filename=f"{run_id}_debug_bundle.zip",
+        media_type="application/zip",
+    )
 
 
 @app.post("/api/datasets/upload")

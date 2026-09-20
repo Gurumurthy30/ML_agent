@@ -31,7 +31,9 @@ from state import AgentState
 from config import GLOBAL_ITER_CEILING, METRIC_IMPROVEMENT_EPSILON, TIER1_RETRY_BUDGET, TIER2_RETRY_BUDGET
 from tools.llm import get_llm
 from tools.logger import get_logger, log_event, step_timer
+from utils.safe import to_float, safe_diff, safe_round, safe_json
 
+_make_llm = get_llm
 PIPELINE_GLOBAL_ITER_CEILING = int(os.environ.get("PIPELINE_GLOBAL_ITER_CEILING", GLOBAL_ITER_CEILING))
 
 
@@ -47,7 +49,7 @@ def compute_agent_fingerprint(agent_name: str, state: AgentState) -> str:
         h.update(json.dumps(feature_steps, sort_keys=True, default=str).encode("utf-8"))
         candidates = state.get("candidate_models") or []
         cand_sig = [
-            (c.get("model_family"), round(float(c.get("cv_score", 0.0)), 4))
+            (c.get("model_family"), safe_round(to_float(c.get("cv_score")), 4, default=0.0))
             for c in candidates
         ]
         h.update(json.dumps(cand_sig, sort_keys=True).encode("utf-8"))
@@ -257,10 +259,16 @@ def _validate_and_override_decision(
             is_stall = True
             stall_reason = "identical_state_fingerprint"
         elif len(metric_history) >= 2:
-            delta = metric_history[-1] - metric_history[-2]
-            if abs(delta) < METRIC_IMPROVEMENT_EPSILON or metric_history[-1] == metric_history[-2]:
+            m_last = to_float(metric_history[-1])
+            m_prev = to_float(metric_history[-2])
+            if m_last is None or m_prev is None:
                 is_stall = True
-                stall_reason = "no_metric_improvement_between_retries"
+                stall_reason = "metric_unavailable_in_history"
+            else:
+                delta = safe_diff(m_last, m_prev)
+                if abs(delta) < METRIC_IMPROVEMENT_EPSILON or m_last == m_prev:
+                    is_stall = True
+                    stall_reason = "no_metric_improvement_between_retries"
 
         if is_stall:
             log_event(run_id, "supervisor", "stalled_retry_escalation",
@@ -345,7 +353,26 @@ def graph_node_supervisor(state: AgentState) -> dict:
             ),
         }
 
-    llm = get_llm(temperature=0)
+    # Adaptive Stopping & Safety Envelope Check
+    from agents.adaptive_controller import adaptive_controller
+    adaptive_rec = adaptive_controller.evaluate_next_action(
+        run_id=run_id,
+        state=state,
+        proposed_tier=state.get("retry_tier", 1),
+    )
+    if adaptive_rec.get("action") == "wind_down":
+        logger.info("Adaptive controller recommended wind-down: %s", adaptive_rec.get("reason"))
+        log_event(run_id, "supervisor", "adaptive_wind_down", reason=adaptive_rec.get("reason"))
+        return {
+            "next_agent": "reporter",
+            "requires_human_approval": False,
+            "stop_reason": adaptive_rec.get("stop_reason", "converged"),
+            "task_instructions": "Synthesize final report with best candidate models and features.",
+            "supervisor_reasoning": adaptive_rec.get("reason"),
+            "last_executed_agent": "supervisor",
+        }
+
+    llm = _make_llm(temperature=0)
 
     system_prompt = """You are the Supervisor node in a multi-agent ML pipeline. You route to
 the correct specialist agent based on the current progress in state:
@@ -394,8 +421,8 @@ Respond with a single structured decision, not prose."""
         # This is NOT optional — the deterministic guard is the authoritative backstop.
         decision = _validate_and_override_decision(decision, state, logger, run_id)
 
-    log_event(run_id, "supervisor", "routed", next_agent=decision.next_agent,
-              retry_tier=decision.retry_tier, reasoning=decision.reasoning,
+    log_event(run_id, "supervisor", "supervisor_decision", next_agent=decision.next_agent,
+              tier=decision.retry_tier, retry_tier=decision.retry_tier, reasoning=decision.reasoning,
               task_instructions=decision.task_instructions)
     logger.info("Supervisor -> %s (%s)", decision.next_agent, decision.reasoning)
 

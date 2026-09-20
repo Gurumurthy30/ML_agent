@@ -13,7 +13,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from state import AgentState
 from agents.supervisor import graph_node_supervisor
-from agents.profiler_agent import profile_agent
+from agents.profiler_agent import profiler_agent
 from agents.eda_agent import eda_agent
 from agents.features_agent import features_agent
 from agents.modeler_agent import modeler_agent
@@ -98,7 +98,7 @@ def build_graph():
     graph = StateGraph(AgentState)
 
     graph.add_node("supervisor", graph_node_supervisor)
-    graph.add_node("profiler", profile_agent)
+    graph.add_node("profiler", profiler_agent)
     graph.add_node("eda_agent", eda_agent)
     graph.add_node("features", features_agent)
     graph.add_node("modeler", modeler_agent)

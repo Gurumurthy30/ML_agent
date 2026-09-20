@@ -25,6 +25,7 @@ from state import AgentState
 from memory.run_memory import store_run_memory
 from tools.logger import get_logger, log_event, read_events, step_timer
 from tools.streaming import stream_text
+from utils.safe import safe_round
 
 _ARTIFACT_DIR = "artifacts/reports"
 os.makedirs(_ARTIFACT_DIR, exist_ok=True)
@@ -66,6 +67,9 @@ def _build_monitoring_summary(run_id: str) -> dict:
     }
 
 
+_make_llm = get_llm
+
+
 def reporter_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
@@ -98,7 +102,7 @@ Never invent numbers not present in the context — only report what's actually 
 Write in plain prose with short section headers, not a wall of JSON."""
     human_prompt = f"Run context:\n{json.dumps(context, default=str, indent=2)}"
 
-    llm = get_llm()
+    llm = _make_llm()
     with step_timer(run_id, "reporter_agent", "generate_report"):
         report_text = stream_text(
             llm, [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
@@ -127,7 +131,7 @@ Write in plain prose with short section headers, not a wall of JSON."""
         f"Task type: {state.get('task_type')}. Modalities: "
         f"{(state.get('profile') or {}).get('detected_modalities')}. "
         f"Metric: {(state.get('profile') or {}).get('recommended_metric')}. "
-        f"Best score: {state.get('best_metric')}. "
+        f"Best score: {safe_round(state.get('best_metric'), 4, default='N/A')}. "
         f"Models tried: {[m.get('model_family') for m in (state.get('candidate_models') or [])]}. "
         f"Feature steps: {(state.get('feature_set') or {}).get('steps')}. "
         f"Verdict: {state.get('last_verdict')}."

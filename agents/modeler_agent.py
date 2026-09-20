@@ -32,6 +32,8 @@ from agents.loop_utils import compute_iteration_ceiling, compute_exec_timeout, r
 from memory.run_memory import lookup_run_memory
 from tools.logger import get_logger, log_event, step_timer
 from tools.streaming import invoke_structured_robust
+from utils.safe import to_float, is_better, safe_diff
+from utils.exceptions import MetricUnavailableError
 
 _TMP_DIR = "artifacts/models"
 os.makedirs(_TMP_DIR, exist_ok=True)
@@ -59,10 +61,7 @@ def _parse_result_line(stdout: str) -> Optional[dict]:
     return None
 
 
-def _better(candidate: float, current_best: Optional[float], higher_is_better: bool) -> bool:
-    if current_best is None:
-        return True
-    return candidate > current_best if higher_is_better else candidate < current_best
+_make_llm = get_llm
 
 
 def _metric_higher_is_better(metric_name: str) -> bool:
@@ -73,7 +72,7 @@ def _metric_higher_is_better(metric_name: str) -> bool:
 def modeler_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
-    llm = get_llm()
+    llm = _make_llm()
 
     profile = state.get("profile", {})
     ceiling = compute_iteration_ceiling(profile)
@@ -188,14 +187,28 @@ def modeler_agent(state: AgentState) -> dict:
                 "is_improvement": False, "is_stall": True,
             }
 
-        family = parsed.get("model_family", "unknown")
-        score = float(parsed["cv_score"])
+        family = parsed.get("model_family", "unknown") if parsed else "unknown"
+        score = to_float(parsed.get("cv_score")) if parsed else None
+
+        if score is None:
+            best_snapshots[iteration] = best_metric
+            log_event(run_id, "modeler_agent", "metric_unavailable",
+                      iteration=iteration, family=family,
+                      reason="No parseable finite cv_score found in Coder output")
+            condensed = f"iter {iteration}: {family} -> metric unavailable / execution failed"
+            return {
+                "condensed": condensed, "record": record,
+                "metric": None, "metric_name": metric_name, "metric_delta": 0.0,
+                "is_improvement": False, "is_stall": True,
+            }
+
         tried_families.append(family)
 
         prev_score = new_scores[-1] if new_scores else (state.get("metric_history") or [None])[-1]
-        if prev_score is not None:
-            delta = score - prev_score
-            is_improvement = delta > METRIC_IMPROVEMENT_EPSILON if higher_is_better else delta < -METRIC_IMPROVEMENT_EPSILON
+        prev_score_float = to_float(prev_score)
+        if prev_score_float is not None:
+            delta = safe_diff(score, prev_score_float, higher_is_better)
+            is_improvement = is_better(score, prev_score_float, higher_is_better, epsilon=METRIC_IMPROVEMENT_EPSILON)
             is_stall = not is_improvement
         else:
             delta = 0.0
@@ -209,9 +222,30 @@ def modeler_agent(state: AgentState) -> dict:
         })
         new_scores.append(score)
 
-        if _better(score, best_metric, higher_is_better):
+        if is_better(score, best_metric, higher_is_better):
             best_metric = score
         best_snapshots[iteration] = best_metric
+
+        # Emit a merged attempt_result: Coder output + CV score + tier + decision in one event.
+        decision_str = "improvement" if is_improvement else "stall"
+        log_event(run_id, "modeler_agent", "attempt_result",
+                  attempt=result.get("attempts", 1),
+                  iteration=iteration,
+                  tier=state.get("retry_tier", 0),
+                  model_family=family,
+                  score=score,
+                  metric_name=parsed.get("metric", metric_name),
+                  metric_delta=delta,
+                  is_improvement=is_improvement,
+                  higher_is_better=higher_is_better,
+                  decision=decision_str,
+                  reason="improvement" if is_improvement else "no improvement above epsilon",
+                  code=result.get("code", ""),
+                  stdout=result.get("stdout", ""),
+                  stderr=result.get("stderr", ""),
+                  success=result["success"],
+                  parent_agent="modeler_agent",
+                  parent_iteration=iteration)
 
         condensed = f"iter {iteration}: {family} -> {parsed.get('metric', metric_name)}={score:.4f}"
         return {
@@ -226,8 +260,8 @@ def modeler_agent(state: AgentState) -> dict:
         if iteration < _PLATEAU_WINDOW or best_metric is None:
             return False
         window_start = iteration - _PLATEAU_WINDOW
-        baseline = best_snapshots.get(window_start)
-        current = best_snapshots.get(iteration)
+        baseline = to_float(best_snapshots.get(window_start))
+        current = to_float(best_snapshots.get(iteration))
         if baseline is None or current is None:
             return False
         improvement = (current - baseline) if higher_is_better else (baseline - current)
@@ -237,6 +271,7 @@ def modeler_agent(state: AgentState) -> dict:
         run_id=run_id, agent_name="modeler_agent", ceiling=ceiling,
         decide_next_step=decide_next_step, execute_step=execute_step,
         plateau_check=plateau_check,
+        higher_is_better=higher_is_better,
     )
 
     update = {

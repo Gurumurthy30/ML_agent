@@ -14,6 +14,7 @@ import os
 import shutil
 import types
 import pandas as pd
+from config import LOOP_SAFETY_CEILING
 
 os.environ.setdefault("OLLAMA_API_KEY", "dummy")
 os.environ["PIPELINE_LOG_DIR"] = "logs_smoke"
@@ -136,8 +137,8 @@ def test_ceiling_scaling():
     big = compute_iteration_ceiling({"columns": 60, "data_quality_flags": ["nulls", "leakage", "imbalance"]})
     check("ceiling scales up with flags+columns", big > small)
     check("ceiling respects floor of 5", small == 5)
-    check("ceiling respects cap of 25", compute_iteration_ceiling(
-        {"columns": 500, "data_quality_flags": list(range(50))}) == 25)
+    check("ceiling respects cap", compute_iteration_ceiling(
+        {"columns": 500, "data_quality_flags": list(range(50))}) == LOOP_SAFETY_CEILING)
 
 
 test_loop_llm_stop()
@@ -173,7 +174,7 @@ def fake_features_llm():
     return llm
 
 
-def fake_coder_agent_features(task_spec, input_paths, output_path, context, run_id=None, timeout=60):
+def fake_coder_agent_features(task_spec, input_paths, output_path, context, run_id=None, timeout=60, **kwargs):
     src = pd.read_csv(input_paths["dataset"]) if input_paths["dataset"].endswith(".csv") \
         else pd.read_parquet(input_paths["dataset"])
     if "drop" in task_spec:
@@ -250,7 +251,7 @@ class FakeModelerLLM:
                                      reasoning="ok")
 
 
-def fake_coder_agent_modeler(task_spec, input_paths, output_path, context, run_id=None, timeout=60):
+def fake_coder_agent_modeler(task_spec, input_paths, output_path, context, run_id=None, timeout=60, **kwargs):
     n = int(task_spec.split()[-1])
     # Score improves for the first 2 families, then plateaus (same score after).
     score = min(n, 3) * 0.1
@@ -379,7 +380,7 @@ class EdaSynthLLM:
         yield types.SimpleNamespace(content="Data looks clean, target is balanced.")
 
 
-def fake_coder_agent_eda(task_spec, input_paths, output_path, context, run_id=None, timeout=60):
+def fake_coder_agent_eda(task_spec, input_paths, output_path, context, run_id=None, timeout=60, **kwargs):
     return {"success": True, "code": "print('ok')", "stdout": "correlation=0.42",
             "output_path": output_path, "attempts": 1}
 

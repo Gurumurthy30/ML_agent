@@ -14,6 +14,7 @@ is still what's being diffed, not decoded pixels/audio.
 """
 import os
 import json
+from typing import Optional, Dict, Any, List
 import pandas as pd
 from tools.llm import get_llm
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -21,6 +22,10 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from state import AgentState
 from tools.streaming import stream_text
 from tools.logger import get_logger, log_event, step_timer
+from utils.safe import safe_round, safe_json
+from utils.exceptions import LLMParseError
+
+_make_llm = get_llm
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".webp")
 _AUDIO_EXTS = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac")
@@ -83,19 +88,19 @@ def compute_data_profile(df: pd.DataFrame, target_column: str = None) -> dict:
             "type": "numerical" if is_numeric else "categorical",
             "modality": modality,
             "null_count": int(series.isnull().sum()),
-            "null_pct": round(series.isnull().mean() * 100, 2),
+            "null_pct": safe_round(series.isnull().mean() * 100, 2, default=0.0),
             "cardinality": int(series.nunique()),
         }
-        if is_numeric:
+        if is_numeric and len(series.dropna()) > 0:
             q1, q3 = series.quantile(0.25), series.quantile(0.75)
             iqr = q3 - q1
             lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
             feature["outliers"] = int(((series < lower) | (series > upper)).sum())
-            feature["mean"] = round(series.mean(), 3)
-            feature["std"] = round(series.std(), 3)
+            feature["mean"] = safe_round(series.mean(), 3, default=None)
+            feature["std"] = safe_round(series.std(), 3, default=None)
         elif modality == "free_text":
             word_counts = series.dropna().astype(str).str.split().map(len)
-            feature["avg_word_count"] = round(float(word_counts.mean()), 1) if len(word_counts) else 0
+            feature["avg_word_count"] = safe_round(float(word_counts.mean()), 1, default=0.0) if len(word_counts) else 0
         profile["features"].append(feature)
 
     non_tabular = {k: v for k, v in modality_counts.items()
@@ -104,13 +109,26 @@ def compute_data_profile(df: pd.DataFrame, target_column: str = None) -> dict:
     profile["detected_modalities"] = (
         sorted(non_tabular.keys()) if non_tabular else ["tabular"]
     )
-    return profile
+    return safe_json(profile)
 
 
+def _parse_json(text: str) -> Optional[dict]:
+    clean = (text or "").strip()
+    if clean.startswith("```json"):
+        clean = clean[7:]
+    elif clean.startswith("```"):
+        clean = clean[3:]
+    if clean.endswith("```"):
+        clean = clean[:-3]
+    clean = clean.strip()
+    try:
+        d = json.loads(clean)
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
 
 
-
-def profile_agent(state: AgentState) -> dict:
+def profiler_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
 
@@ -119,7 +137,7 @@ def profile_agent(state: AgentState) -> dict:
         target_column = state.get("target_column")
         computed_profile = compute_data_profile(df, target_column)
 
-    llm = get_llm()
+    llm = _make_llm()
 
     system_prompt = """You are the Profiler agent in a multi-agent ML pipeline.
 Interpret pre-computed dataset statistics; never invent numbers yourself.
@@ -143,16 +161,27 @@ Agent state context:
     with step_timer(run_id, "profiler_agent", "llm_interpret"):
         response_text = stream_text(llm, messages, run_id=run_id, agent="profiler_agent")
 
-    try:
-        result = json.loads(response_text)
-    except json.JSONDecodeError:
+    result = _parse_json(response_text)
+    if result is None:
         logger.warning("profiler_agent: first response was not valid JSON, retrying once")
         messages += [
             SystemMessage(content=response_text),
             HumanMessage(content="Your last response was not valid JSON. Return ONLY the JSON object."),
         ]
         retry_text = stream_text(llm, messages, run_id=run_id, agent="profiler_agent(retry)")
-        result = json.loads(retry_text)
+        result = _parse_json(retry_text)
+
+    if result is None:
+        logger.warning("profiler_agent: LLM JSON parsing failed after retry; constructing fallback profile from statistics")
+        result = {
+            "dataset_name": "dataset",
+            "modality": computed_profile.get("detected_modalities", ["tabular"])[0],
+            "rows": computed_profile.get("rows", 0),
+            "target_column": target_column,
+            "recommended_metric": "accuracy",
+            "data_quality_flags": [],
+            "features": computed_profile.get("features", []),
+        }
 
     # The LLM's JSON is the "interpreted" profile handed downstream, but the
     # ground-truth modality_summary/detected_modalities came straight from pandas —

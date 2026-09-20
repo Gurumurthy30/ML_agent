@@ -1,463 +1,149 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Multi-Agent ML Pipeline — Debug UI</title>
-  <meta name="description" content="Live monitoring, interactive control, and debug console for the Multi-Agent ML Pipeline. State inspector, raw event log, loop visualizer.">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✳️</text></svg>">
-  
-  <!-- Tailwind CSS Play CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            terracotta: {
-              DEFAULT: '#D97757',
-              hover: '#C85A32',
-              light: '#FBF0EB',
-              dark: '#E28466',
-            },
-            neutral: {
-              cream: '#FAF9F6',
-              card: '#FFFFFF',
-              darkbg: '#141416',
-              darkcard: '#202024',
-            }
-          }
-        }
-      }
-    }
-  </script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agent console — multi-agent ML pipeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
 
-  <!-- Highlight.js for code syntax highlighting -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
-
-  <!-- Marked.js for markdown rendering -->
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
-  <!-- Custom Stylesheet -->
-  <link rel="stylesheet" href="styles.css">
 </head>
-<body class="bg-[#FAF9F6] dark:bg-[#141416] text-stone-900 dark:text-stone-100 flex h-screen overflow-hidden antialiased">
+<body>
 
-  <!-- Left Sidebar (Past Runs & Navigation) -->
-  <aside id="left-sidebar" class="w-64 flex-shrink-0 bg-stone-50/70 dark:bg-[#1A1A1E] border-r border-stone-200/80 dark:border-zinc-800 flex flex-col justify-between transition-all duration-200 z-20">
-    <div class="p-4 flex flex-col h-full overflow-hidden">
-      <!-- App Brand / Header -->
-      <div class="flex items-center justify-between pb-4 border-b border-stone-200/70 dark:border-zinc-800">
-        <div class="flex items-center space-x-2.5">
-          <div class="w-7 h-7 rounded-lg bg-[#D97757] flex items-center justify-center text-white font-bold text-sm shadow-sm">
-            ✳
-          </div>
-          <div>
-            <h1 class="text-sm font-semibold tracking-tight text-stone-900 dark:text-stone-100">ML Pipeline</h1>
-            <p class="text-[11px] text-stone-500 dark:text-stone-400">Agentic Orchestration</p>
-          </div>
-        </div>
-      </div>
+<header>
+  <span class="brand"><i>✳</i>Agent console</span>
+  <span class="runid" id="h-run">no run</span>
+  <span class="state-pill" id="h-state" data-s="ready"><b></b><span>idle</span></span>
 
-      <!-- New Run Button -->
-      <div class="mt-4">
-        <button id="new-run-btn" class="w-full flex items-center justify-center space-x-2 px-3.5 py-2.5 rounded-xl bg-white dark:bg-zinc-800 hover:bg-stone-100 dark:hover:bg-zinc-700/80 border border-stone-200 dark:border-zinc-700 text-xs font-medium text-stone-800 dark:text-stone-200 shadow-sm transition-all">
-          <svg class="w-3.5 h-3.5 text-[#D97757]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
-          </svg>
-          <span>New Pipeline Run</span>
-        </button>
-      </div>
+  <div class="gauges" id="gauges">
+    <div class="gauge" id="g-iter"><span class="k">iterations</span><span class="v">—</span><span class="bar"><i></i></span></div>
+    <div class="gauge" id="g-att"><span class="k">attempts</span><span class="v">—</span><span class="bar"><i></i></span></div>
+    <div class="gauge" id="g-tok"><span class="k">tokens</span><span class="v">—</span><span class="bar"><i></i></span></div>
+    <div class="gauge" id="g-cost"><span class="k">spend</span><span class="v">—</span><span class="bar"><i></i></span></div>
+    <div class="gauge" id="g-time"><span class="k">elapsed</span><span class="v">—</span><span class="bar"><i></i></span></div>
+  </div>
 
-      <!-- Past Runs Section -->
-      <div class="mt-5 flex-1 flex flex-col min-h-0">
-        <div class="flex items-center justify-between mb-2 px-1">
-          <span class="text-[11px] font-semibold uppercase tracking-wider text-stone-400 dark:text-stone-500">Recent Runs</span>
-          <button id="refresh-runs-btn" title="Refresh runs list" class="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300">
-            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-            </svg>
-          </button>
-        </div>
-        <div id="runs-list" class="flex-1 overflow-y-auto space-y-1.5 pr-1">
-          <!-- Dynamically populated by app.js -->
-          <div class="p-3 text-center text-xs text-stone-400 dark:text-stone-500 italic">No past runs recorded</div>
-        </div>
-      </div>
+  <div class="hbtns">
+    <div class="seg" role="group" aria-label="Detail level">
+      <button id="m-simple" aria-pressed="false">Simple</button>
+      <button id="m-dev" aria-pressed="true">Developer</button>
+    </div>
+    <button class="btn" id="b-pause">Pause</button>
+    <button class="btn" id="b-esc">Escalate tier</button>
+    <button class="btn danger" id="b-stop">Stop</button>
+    <button class="btn" id="b-theme" aria-label="Switch theme">◐</button>
+  </div>
+</header>
 
-      <!-- Footer Controls (Dark mode & Status) -->
-      <div class="pt-3 border-t border-stone-200/70 dark:border-zinc-800 flex items-center justify-between text-xs text-stone-500 dark:text-stone-400">
-        <button id="theme-toggle-btn" class="flex items-center space-x-1.5 hover:text-stone-900 dark:hover:text-stone-200 py-1 px-2 rounded-lg transition-colors">
-          <span id="theme-icon">🌙</span>
-          <span id="theme-label" class="text-[11px] font-medium">Dark Mode</span>
-        </button>
-        <span class="inline-flex items-center space-x-1 text-[11px]">
-          <span id="server-status-dot" class="w-2 h-2 rounded-full bg-emerald-500"></span>
-          <span id="server-status-text">Ready</span>
-        </span>
-      </div>
+<div class="shell">
+  <!-- ============ left: runs + launcher ============ -->
+  <aside>
+    <div class="sec">
+      <h2>Start a run</h2>
+      <label class="f" for="ds">Dataset path</label>
+      <input type="text" id="ds" value="benchmark/titanic.csv" spellcheck="false">
+      <label class="f" for="md" style="margin-top:8px">Mode</label>
+      <select id="md"><option value="full_pipeline">full_pipeline</option><option value="eda_only">eda_only</option></select>
+      <label class="chk"><input type="checkbox" id="gm"> Approve every feature step</label>
+      <button class="btn go" id="b-start" style="width:100%;margin-top:10px">Run pipeline</button>
+      <button class="btn" id="b-demo" style="width:100%;margin-top:6px">Replay demo run</button>
+    </div>
+    <div class="sec" style="flex:1">
+      <h2>Runs</h2>
+      <div id="runlist"><div class="empty" style="padding:12px 0">Nothing yet.</div></div>
     </div>
   </aside>
 
-  <!-- Center Main Stream Column -->
-  <main class="flex-1 flex flex-col h-full overflow-hidden relative">
-    
-    <!-- Top Bar Navigation & Always-Visible Telemetry Header Strip -->
-    <header class="border-b border-stone-200/70 dark:border-zinc-800 bg-white/90 dark:bg-[#141416]/90 backdrop-blur-sm flex-shrink-0 z-10">
-      <div class="h-14 px-4 md:px-6 flex items-center justify-between">
-        <div class="flex items-center space-x-3">
-          <button id="toggle-sidebar-btn" class="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 md:hidden">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
-            </svg>
-          </button>
-          <div id="header-run-info" class="flex items-center space-x-2">
-            <span id="header-run-id" class="text-xs font-mono font-semibold text-stone-700 dark:text-stone-300">No active run</span>
-            <span id="header-run-status-pill" class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-stone-100 dark:bg-zinc-800 text-stone-600 dark:text-stone-400">Idle</span>
-          </div>
-        </div>
-
-        <div class="flex items-center space-x-2">
-          <!-- Debug Console Toggle -->
-          <button id="toggle-debug-btn" title="Toggle Debug Console" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200 dark:border-zinc-700 hover:bg-stone-100 dark:hover:bg-zinc-800 text-xs font-medium text-stone-600 dark:text-stone-300 transition-all">
-            <svg class="w-3.5 h-3.5 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
-            </svg>
-            <span>Debug</span>
-          </button>
-          <!-- Execution Trace Toggle Button -->
-          <button id="toggle-trace-btn" title="Toggle Execution Trace" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200 dark:border-zinc-700 hover:bg-stone-100 dark:hover:bg-zinc-800 text-xs font-medium text-stone-600 dark:text-stone-300 transition-all">
-            <svg class="w-3.5 h-3.5 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            <span>Trace</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Always-Visible Developer Telemetry Header Strip -->
-      <div id="telemetry-strip" class="bg-stone-50/90 dark:bg-[#18181C]/90 border-t border-stone-200/60 dark:border-zinc-800/80 px-4 md:px-6 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs">
-        <!-- Pipeline Stage Chain -->
-        <div class="flex items-center space-x-1.5 overflow-x-auto py-0.5">
-          <span class="text-[10px] font-bold uppercase tracking-wider text-stone-400 dark:text-stone-500 mr-1 flex-shrink-0">Stage:</span>
-          <div id="telemetry-stages" class="flex items-center space-x-1">
-            <span class="telemetry-stage-pill px-2 py-0.5 rounded text-[10px] font-medium bg-stone-200/60 dark:bg-zinc-800 text-stone-600 dark:text-stone-400" data-stage="profiler">Profiler</span>
-            <span class="text-stone-300 dark:text-zinc-600 text-[10px]">→</span>
-            <span class="telemetry-stage-pill px-2 py-0.5 rounded text-[10px] font-medium bg-stone-200/60 dark:bg-zinc-800 text-stone-600 dark:text-stone-400" data-stage="eda_agent">EDA</span>
-            <span class="text-stone-300 dark:text-zinc-600 text-[10px]">→</span>
-            <span class="telemetry-stage-pill px-2 py-0.5 rounded text-[10px] font-medium bg-stone-200/60 dark:bg-zinc-800 text-stone-600 dark:text-stone-400" data-stage="features">Features</span>
-            <span class="text-stone-300 dark:text-zinc-600 text-[10px]">→</span>
-            <span class="telemetry-stage-pill px-2 py-0.5 rounded text-[10px] font-medium bg-stone-200/60 dark:bg-zinc-800 text-stone-600 dark:text-stone-400" data-stage="modeler">Modeler</span>
-            <span class="text-stone-300 dark:text-zinc-600 text-[10px]">→</span>
-            <span class="telemetry-stage-pill px-2 py-0.5 rounded text-[10px] font-medium bg-stone-200/60 dark:bg-zinc-800 text-stone-600 dark:text-stone-400" data-stage="judge">Judge</span>
-            <span class="text-stone-300 dark:text-zinc-600 text-[10px]">→</span>
-            <span class="telemetry-stage-pill px-2 py-0.5 rounded text-[10px] font-medium bg-stone-200/60 dark:bg-zinc-800 text-stone-600 dark:text-stone-400" data-stage="reporter">Reporter</span>
-          </div>
-        </div>
-
-        <!-- Telemetry Live Metrics & Status -->
-        <div class="flex items-center space-x-3 text-[11px]">
-          <div class="flex items-center space-x-1.5">
-            <span id="telemetry-agent-dot" class="w-2 h-2 rounded-full bg-stone-400"></span>
-            <span class="text-stone-500 dark:text-stone-400">Agent:</span>
-            <span id="telemetry-active-agent" class="font-medium text-stone-800 dark:text-stone-200 font-mono">Idle</span>
-          </div>
-          <span class="text-stone-300 dark:text-zinc-700">|</span>
-          <div class="flex items-center space-x-1 font-mono">
-            <span class="text-stone-500 dark:text-stone-400">Iter:</span>
-            <span id="telemetry-iter" class="font-semibold text-stone-800 dark:text-stone-200">0</span>
-            <span class="text-stone-400">/200</span>
-          </div>
-          <span class="text-stone-300 dark:text-zinc-700">|</span>
-          <div class="flex items-center space-x-1 font-mono">
-            <span class="text-stone-500 dark:text-stone-400">Budget:</span>
-            <span class="text-stone-700 dark:text-stone-300" title="Tier 1 Modeler Retries">T1:<span id="telemetry-t1-count">0</span>/2</span>
-            <span class="text-stone-700 dark:text-stone-300" title="Tier 2 Features Retries">T2:<span id="telemetry-t2-count">0</span>/2</span>
-          </div>
-          <span class="text-stone-300 dark:text-zinc-700">|</span>
-          <div class="flex items-center space-x-1.5">
-            <span class="text-stone-500 dark:text-stone-400">Status:</span>
-            <span id="telemetry-run-status" class="px-2 py-0.5 rounded font-semibold text-[10px] bg-stone-200 text-stone-700 dark:bg-zinc-800 dark:text-stone-300">Ready</span>
-          </div>
-        </div>
-      </div>
-    </header>
-
-    <!-- Scrollable Chat Feed Container -->
-    <div id="feed-container" class="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 scroll-smooth">
-      <div class="max-w-3xl mx-auto space-y-6">
-
-        <!-- Run Configuration Card -->
-        <section id="config-card" class="bg-white dark:bg-[#202024] border border-stone-200/80 dark:border-zinc-800/90 rounded-2xl shadow-sm p-6 space-y-5 animate-card-in">
-          <div class="flex items-center justify-between pb-2 border-b border-stone-100 dark:border-zinc-800">
-            <div>
-              <h2 class="text-base font-semibold text-stone-900 dark:text-stone-100">Configure ML Pipeline</h2>
-              <p class="text-xs text-stone-500 dark:text-stone-400">Select your dataset and orchestration mode</p>
-            </div>
-            <span class="px-2.5 py-1 rounded-full text-[11px] font-medium bg-orange-50 dark:bg-orange-950/30 text-[#D97757] border border-orange-200/60 dark:border-orange-900/50">
-              Autonomous
-            </span>
-          </div>
-
-          <form id="run-config-form" class="space-y-4" onsubmit="event.preventDefault();">
-
-            <!-- Dataset Upload Drop Zone -->
-            <div>
-              <label class="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1.5">
-                Upload Dataset
-              </label>
-              <div id="upload-drop-zone"
-                class="relative border-2 border-dashed border-stone-200 dark:border-zinc-700 rounded-xl p-4 text-center hover:border-[#D97757]/60 dark:hover:border-[#D97757]/50 transition-all cursor-pointer group bg-stone-50/30 dark:bg-[#18181C]/30">
-                <input id="upload-file-input" type="file" accept=".csv,.parquet,.pq" class="hidden">
-                <div class="flex flex-col items-center space-y-1.5 pointer-events-none">
-                  <div class="w-10 h-10 rounded-full bg-orange-50 dark:bg-orange-950/40 text-[#D97757] flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
-                    </svg>
-                  </div>
-                  <p id="upload-status-text" class="text-xs text-stone-600 dark:text-stone-300 font-medium">
-                    Drop a <span class="font-mono text-[11px] text-[#D97757]">.csv</span> or <span class="font-mono text-[11px] text-[#D97757]">.parquet</span> file, or <span class="text-[#D97757] underline">click to browse</span>
-                  </p>
-                  <p id="upload-detail-text" class="text-[10px] text-stone-400 dark:text-stone-500">
-                    Max 500 MB. File is uploaded to server and path auto-filled below.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <!-- Dataset Path Input -->
-            <div>
-              <label for="dataset-input" class="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1.5">
-                Dataset File Path (.csv or .parquet)
-              </label>
-              <input id="dataset-input" type="text" required value="" placeholder="e.g. /path/to/data.csv or use upload / quick select above"
-                class="w-full px-3.5 py-2.5 rounded-xl border border-stone-200 dark:border-zinc-700 bg-stone-50/50 dark:bg-[#18181C] text-xs font-mono text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-[#D97757]/40 focus:border-[#D97757] transition-all">
-              
-              <!-- Quick Select Chips -->
-              <div class="flex items-center flex-wrap gap-2 mt-2">
-                <span class="text-[11px] text-stone-400 dark:text-stone-500">Quick select:</span>
-                <button type="button" class="quick-chip px-2.5 py-1 rounded-md text-[11px] font-mono bg-stone-100 dark:bg-zinc-800 hover:bg-stone-200 dark:hover:bg-zinc-700 text-stone-600 dark:text-stone-300 transition-colors border border-transparent" data-path="_extras/data/train.csv" title="Select demo customer churn dataset">
-                  train.csv (Churn demo)
-                </button>
-              </div>
-            </div>
-
-            <!-- Pipeline Mode & Guided Mode Row -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-              <div>
-                <label for="mode-select" class="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1.5">
-                  Pipeline Mode
-                </label>
-                <select id="mode-select" class="w-full px-3.5 py-2 rounded-xl border border-stone-200 dark:border-zinc-700 bg-stone-50/50 dark:bg-[#18181C] text-xs text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-[#D97757]/40 focus:border-[#D97757]">
-                  <option value="full_pipeline" selected>Full Pipeline (EDA + Features + Modeler + Judge + Report)</option>
-                  <option value="eda_only">EDA Only (Exploratory Data Analysis)</option>
-                </select>
-              </div>
-
-              <div class="flex flex-col justify-end">
-                <div class="flex items-center space-x-2.5 p-2 rounded-xl bg-stone-50/50 dark:bg-[#18181C] border border-stone-200 dark:border-zinc-700">
-                  <input id="guided-mode-toggle" type="checkbox" class="w-4 h-4 text-[#D97757] rounded border-stone-300 focus:ring-[#D97757]">
-                  <label for="guided-mode-toggle" class="text-xs text-stone-700 dark:text-stone-300 select-none cursor-pointer">
-                    <span class="font-medium">Guided Mode</span>
-                    <span class="block text-[10px] text-stone-400 dark:text-stone-500">Require human approval on every feature step</span>
-                  </label>
-                </div>
-              </div>
-            </div>
-
-            <!-- Submit Button -->
-            <div class="pt-2">
-              <button id="start-run-btn" type="submit" class="w-full py-2.5 px-4 rounded-xl bg-[#D97757] hover:bg-[#C85A32] text-white font-medium text-sm shadow-sm hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 transition-all duration-150 flex items-center justify-center space-x-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-                <span>Run Pipeline</span>
-              </button>
-            </div>
-          </form>
-        </section>
-
-        <!-- Turn Cards Feed (Appended Live by app.js) -->
-        <div id="turns-feed" class="space-y-6">
-          <!-- Dynamic cards inserted here -->
-        </div>
-
-      </div>
+  <!-- ============ centre ============ -->
+  <main>
+    <div class="tabs" role="tablist" id="tabs">
+      <button role="tab" data-v="trace" aria-selected="true">Trace</button>
+      <button role="tab" data-v="attempts" aria-selected="false">Attempts <span class="count" id="c-att">0</span></button>
+      <button role="tab" data-v="metric" aria-selected="false">Metric</button>
+      <button role="tab" data-v="state" aria-selected="false">State</button>
+      <button role="tab" data-v="errors" aria-selected="false">Errors <span class="count" id="c-err">0</span></button>
+      <button role="tab" data-v="raw" aria-selected="false">Raw</button>
     </div>
 
-    <!-- Floating "↓ New Activity" Jump Button -->
-    <div id="scroll-bottom-container" class="absolute bottom-6 right-8 z-20 hidden">
-      <button id="scroll-down-btn" class="flex items-center space-x-1.5 px-3.5 py-2 rounded-full bg-white dark:bg-zinc-800 text-xs font-medium text-stone-700 dark:text-stone-200 shadow-lg border border-stone-200 dark:border-zinc-700 hover:bg-stone-50 dark:hover:bg-zinc-700 transition-all">
-        <svg class="w-3.5 h-3.5 text-[#D97757] animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
-        </svg>
-        <span>New activity</span>
-      </button>
-    </div>
+    <section class="view" data-v="trace" data-on="true">
+      <div id="notices"></div>
+      <div class="spine" id="spine">
+        <div class="empty"><b>No steps yet</b>Start a run, or replay the demo to see how the console reads a live pipeline.</div>
+      </div>
+    </section>
 
+    <section class="view" data-v="attempts">
+      <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
+        <input type="text" id="af" placeholder="filter by model, tier, decision, reason" style="max-width:320px;font-family:var(--sans)">
+        <span id="af-n" style="font-size:11.5px;color:var(--fg-3)"></span>
+      </div>
+      <table id="atbl">
+        <thead><tr>
+          <th data-k="attempt" data-num>#</th><th data-k="tier">tier</th><th data-k="model">what it tried</th>
+          <th data-k="score" data-num>score</th><th data-k="dprev" data-num>vs prev</th><th data-k="dbest" data-num>vs best</th>
+          <th data-k="decision">decision</th><th data-k="reason">why</th><th data-k="ms" data-num>time</th>
+        </tr></thead>
+        <tbody><tr><td colspan="9"><div class="empty"><b>No attempts recorded</b>Model attempts appear here the moment the first candidate is evaluated.</div></td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="view" data-v="metric">
+      <div id="chartwrap"></div>
+      <p style="font-size:11.5px;color:var(--fg-3);margin-top:10px;max-width:70ch">
+        The shaded band is the noise floor: one standard deviation of cross-validation scores.
+        A change inside the band is not an improvement, however it looks on the line.
+      </p>
+    </section>
+
+    <section class="view" data-v="state">
+      <input type="text" id="sf" placeholder="filter keys" style="max-width:280px;font-family:var(--sans);margin-bottom:10px">
+      <div id="tree"></div>
+    </section>
+
+    <section class="view" data-v="errors"><div id="errlist"></div></section>
+
+    <section class="view" data-v="raw">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input type="text" id="rf" placeholder="filter events" style="max-width:280px;font-family:var(--sans)">
+        <button class="btn" id="b-copy">Copy all</button>
+      </div>
+      <div id="rawlist"></div>
+    </section>
   </main>
 
-  <!-- Right Drawer (Developer Console: Trace | State | Loops | Events) -->
-  <aside id="right-drawer" class="w-96 flex-shrink-0 bg-stone-50/90 dark:bg-[#1A1A1E] border-l border-stone-200/80 dark:border-zinc-800 flex flex-col transition-all duration-200 z-20">
-    <div class="flex flex-col h-full overflow-hidden">
-
-      <!-- Drawer Tab Bar with distinct active tab styling -->
-      <div class="flex items-center border-b border-stone-200/70 dark:border-zinc-800 flex-shrink-0 bg-stone-100/70 dark:bg-zinc-900/70 p-1 gap-1">
-        <button id="tab-trace" data-tab="trace"
-          class="drawer-tab flex-1 py-1.5 px-2 rounded-lg text-[11px] font-semibold uppercase tracking-wider text-center border-b-2 border-[#D97757] text-[#D97757] transition-all">
-          Trace
-        </button>
-        <button id="tab-state" data-tab="state"
-          class="drawer-tab flex-1 py-1.5 px-2 rounded-lg text-[11px] font-semibold uppercase tracking-wider text-center border-b-2 border-transparent text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 transition-all">
-          State
-        </button>
-        <button id="tab-loops" data-tab="loops"
-          class="drawer-tab flex-1 py-1.5 px-2 rounded-lg text-[11px] font-semibold uppercase tracking-wider text-center border-b-2 border-transparent text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 transition-all">
-          Loops
-        </button>
-        <button id="tab-events" data-tab="events"
-          class="drawer-tab flex-1 py-1.5 px-2 rounded-lg text-[11px] font-semibold uppercase tracking-wider text-center border-b-2 border-transparent text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 transition-all">
-          Events
-        </button>
-        <button id="close-trace-btn" title="Close Debug Console" class="p-1.5 rounded-lg text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 hover:bg-stone-200 dark:hover:bg-zinc-800 flex-shrink-0 transition-colors">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-          </svg>
-        </button>
-      </div>
-
-      <!-- Tab Panels -->
-      <div class="flex-1 overflow-hidden">
-
-        <!-- ── Trace Tab ── -->
-        <div id="panel-trace" class="drawer-panel h-full flex flex-col p-4">
-          <div class="text-[11px] text-stone-500 dark:text-stone-400 mb-2 flex justify-between px-1">
-            <span>Agent / Step</span>
-            <span>Duration</span>
-          </div>
-          <div id="trace-timeline" class="flex-1 overflow-y-auto space-y-2 pr-1">
-            <div class="p-3 text-center text-xs text-stone-400 dark:text-stone-500 italic">No events logged yet</div>
-          </div>
-        </div>
-
-        <!-- ── State Inspector Tab ── -->
-        <div id="panel-state" class="drawer-panel h-full overflow-y-auto p-4 hidden">
-          <div class="space-y-3">
-            <!-- Run Stop Reason Card -->
-            <div id="state-stop-reason-box" class="hidden p-3 rounded-xl border border-stone-200/80 dark:border-zinc-700/80 bg-white dark:bg-zinc-800/80 space-y-1 shadow-xs">
-              <p class="text-[10px] font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500">Run Stop Reason</p>
-              <div id="state-stop-reason-text" class="text-xs font-bold font-mono text-stone-900 dark:text-stone-100">Ready</div>
-            </div>
-
-            <!-- Pipeline stage indicators -->
-            <div>
-              <p class="text-[10px] font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500 mb-2">Pipeline Stage</p>
-              <div id="state-stages" class="grid grid-cols-4 gap-1 text-center">
-                <!-- Filled by JS -->
-              </div>
-            </div>
-            <!-- Retry / iteration budget -->
-            <div class="bg-white dark:bg-zinc-800/70 rounded-xl p-3 space-y-2 border border-stone-200/60 dark:border-zinc-700/60">
-              <p class="text-[10px] font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500">Retry Budget</p>
-              <div class="space-y-1.5">
-                <div class="flex items-center justify-between text-[11px]">
-                  <span class="text-stone-500">Tier 1 (Modeler)</span>
-                  <div id="state-tier1-bar" class="flex space-x-1">
-                    <span class="w-4 h-4 rounded-sm bg-stone-200 dark:bg-zinc-600"></span>
-                    <span class="w-4 h-4 rounded-sm bg-stone-200 dark:bg-zinc-600"></span>
-                  </div>
-                </div>
-                <div class="flex items-center justify-between text-[11px]">
-                  <span class="text-stone-500">Tier 2 (Features)</span>
-                  <div id="state-tier2-bar" class="flex space-x-1">
-                    <span class="w-4 h-4 rounded-sm bg-stone-200 dark:bg-zinc-600"></span>
-                    <span class="w-4 h-4 rounded-sm bg-stone-200 dark:bg-zinc-600"></span>
-                  </div>
-                </div>
-              </div>
-              <div class="flex items-center justify-between text-[11px] pt-1 border-t border-stone-100 dark:border-zinc-700">
-                <span class="text-stone-500">Global Iterations</span>
-                <span id="state-iter-count" class="font-mono font-medium">0 / 200</span>
-              </div>
-            </div>
-            <!-- Best metric -->
-            <div class="bg-white dark:bg-zinc-800/70 rounded-xl p-3 border border-stone-200/60 dark:border-zinc-700/60">
-              <p class="text-[10px] font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500 mb-1.5">Best Metric</p>
-              <div id="state-best-metric" class="text-2xl font-bold font-mono text-stone-900 dark:text-stone-100">—</div>
-              <div id="state-metric-trend" class="text-[10px] text-stone-400 mt-0.5 font-mono"></div>
-            </div>
-            <!-- Candidate models leaderboard -->
-            <div>
-              <p class="text-[10px] font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500 mb-1.5">Model Leaderboard</p>
-              <div id="state-models" class="space-y-1 text-[11px]">
-                <div class="text-stone-400 dark:text-stone-500 italic">No models yet</div>
-              </div>
-            </div>
-            <!-- Raw state dump (collapsible) -->
-            <details class="text-[10px]">
-              <summary class="cursor-pointer text-stone-400 dark:text-stone-500 font-medium hover:text-stone-600">Raw state (expand)</summary>
-              <pre id="state-raw-dump" class="mt-2 p-2 rounded-lg bg-zinc-900 text-zinc-300 overflow-x-auto max-h-64 text-[10px] font-mono whitespace-pre-wrap"></pre>
-            </details>
-          </div>
-        </div>
-
-        <!-- ── Loop Visualizer & Ledger Tab ── -->
-        <div id="panel-loops" class="drawer-panel h-full overflow-y-auto p-4 hidden space-y-4">
-          <!-- Iteration-by-iteration Ledger -->
-          <div>
-            <div class="flex items-center justify-between mb-2">
-              <p class="text-[10px] font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500">Iteration Metric Ledger</p>
-              <span class="text-[10px] font-mono text-stone-400">Δ vs prior</span>
-            </div>
-            <div id="loop-ledger-container" class="space-y-1.5 font-mono text-[11px]">
-              <div class="text-xs text-stone-400 dark:text-stone-500 italic">No iteration metrics recorded yet</div>
-            </div>
-          </div>
-
-          <!-- Per-Agent Progress Overview -->
-          <div class="pt-2 border-t border-stone-200/70 dark:border-zinc-800">
-            <p class="text-[10px] font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500 mb-2">Per-Agent Loop Ceilings</p>
-            <div id="loop-viz-container" class="space-y-3">
-              <div class="text-xs text-stone-400 dark:text-stone-500 italic">No loop activity yet</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ── Raw Events Tab ── -->
-        <div id="panel-events" class="drawer-panel h-full flex flex-col hidden">
-          <div class="p-3 border-b border-stone-200/50 dark:border-zinc-700/50 flex-shrink-0 space-y-2">
-            <input id="event-filter-input" type="text" placeholder="Filter by agent or type…"
-              class="w-full px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-[#D97757]/40">
-            <div class="flex items-center justify-between text-[10px] text-stone-400">
-              <span id="event-log-count">0 events</span>
-              <div class="flex items-center space-x-2">
-                <button id="export-debug-report-btn" title="Copy full debug report to clipboard"
-                  class="px-2 py-0.5 rounded bg-[#D97757]/10 hover:bg-[#D97757]/20 text-[#D97757] font-semibold transition-colors">
-                  📋 Copy Report
-                </button>
-                <button id="download-debug-report-btn" title="Download debug report as JSON"
-                  class="px-2 py-0.5 rounded bg-stone-100 hover:bg-stone-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-stone-600 dark:text-stone-300 transition-colors">
-                  ⬇ Export JSON
-                </button>
-                <button id="clear-event-log-btn" class="hover:text-stone-600 dark:hover:text-stone-300">Clear</button>
-              </div>
-            </div>
-          </div>
-          <div id="event-log-list" class="flex-1 overflow-y-auto p-2 space-y-1.5 font-mono text-[10px]">
-            <div class="text-stone-400 dark:text-stone-500 italic p-2">No events yet</div>
-          </div>
-        </div>
-
-      </div>
+  <!-- ============ right: why now ============ -->
+  <div class="side">
+    <div class="sec">
+      <h2>Best score</h2>
+      <div class="bignum" id="s-best">—<small id="s-best-sub">nothing evaluated yet</small></div>
     </div>
-  </aside>
+    <div class="sec">
+      <h2>Why this step</h2>
+      <div class="quote" id="s-why">Waiting for the supervisor's first routing decision.</div>
+    </div>
+    <div class="sec">
+      <h2>Run facts</h2>
+      <dl style="margin:0">
+        <div class="kv"><dt>tier</dt><dd id="s-tier">—</dd></div>
+        <div class="kv"><dt>next agent</dt><dd id="s-next">—</dd></div>
+        <div class="kv"><dt>verdict</dt><dd id="s-verdict">—</dd></div>
+        <div class="kv"><dt>retries</dt><dd id="s-retry">—</dd></div>
+        <div class="kv"><dt>task</dt><dd id="s-task">—</dd></div>
+        <div class="kv"><dt>stop reason</dt><dd id="s-stop">—</dd></div>
+      </dl>
+    </div>
+    <div class="sec">
+      <h2>Judge feedback</h2>
+      <div class="quote" id="s-judge" style="border-color:var(--ok)">—</div>
+    </div>
+  </div>
+</div>
 
-  <!-- Application Logic -->
-  <script src="app.js"></script>
+<div id="toasts"></div>
+
+<script src="app.js"></script>
+
 </body>
 </html>

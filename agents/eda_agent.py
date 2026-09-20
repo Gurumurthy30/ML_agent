@@ -44,11 +44,13 @@ class EdaStepDecision(BaseModel):
 
 from tools.streaming import stream_text, invoke_structured_robust
 
+_make_llm = get_llm
+
 
 def eda_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
-    llm = get_llm()
+    llm = _make_llm()
 
     profile = state.get("profile", {})
     ceiling = compute_iteration_ceiling(profile)
@@ -128,7 +130,7 @@ CRITICAL RULES:
     )
 
     # Short narrative synthesis for downstream agents (Features/Reporter), streamed live.
-    synth_llm = get_llm()
+    synth_llm = _make_llm()
     synth_system = ("You are an expert ML statistician synthesizing exploratory data analysis (EDA) results "
                     "for the downstream Feature Engineer agent.\n"
                     "CRITICAL: Do NOT mention charts, plots, or visual figures.\n"
