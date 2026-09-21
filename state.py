@@ -73,6 +73,7 @@ class AgentState(TypedDict):
         "unresolved_exploration", "stalled", "global_iteration_ceiling", "retry_cap_exceeded"
     ]]
     approval_status: Optional[Literal["approved", "modify", "reject"]]
+    modifications: Optional[str]   # persists operator modification instructions across pause/resume
     feature_plan: Optional[dict]   # persists {code, description, destructive_self_assessment}
                                     # across the human-approval interrupt/resume cycle
 
@@ -135,6 +136,7 @@ def build_initial_state(
         "requires_human_approval": False,
         "approval_reason": None,
         "approval_status": None,
+        "modifications": None,
         "feature_plan": None,
         "private_memories": {"coder": [], "eda": [], "features": [], "modeler": []},
         "open_summary_memory": {},

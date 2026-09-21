@@ -89,11 +89,22 @@ def features_agent(state: AgentState) -> dict:
             "steps_taken_this_run": condensed_history,
             "private_features_history": private_features,
         }
+        modifications = state.get("modifications") or (state.get("feature_plan") or {}).get("modifications")
+        if modifications:
+            context["human_modifications"] = modifications
+
         retry_note = ""
         if is_retry:
             retry_note = (f"\nThis is a retry (tier 2): the Judge rejected the previous "
                           f"feature set. Feedback: {state.get('judge_feedback')}. "
                           f"Address that feedback rather than repeating the same approach.")
+
+        modify_note = ""
+        if modifications:
+            modify_note = (f"\nHuman operator reviewed the previous feature proposal and requested modifications: "
+                           f"\"{modifications}\". "
+                           f"You MUST strictly follow these operator modification instructions in your next step.")
+
         system_prompt = ("You are the Features agent. Decide the next feature-engineering "
                          "step, building on the CURRENT transformed dataset (not raw). "
                          "Carefully review `eda_narrative` and `eda_findings` for high/low correlation "
@@ -110,7 +121,8 @@ def features_agent(state: AgentState) -> dict:
                          "re-run all prior steps from scratch. "
                          "Self-report honestly if a step could irreversibly lose "
                          "information. Stop once the feature set is ready for modeling."
-                         + retry_note)
+                         + retry_note
+                         + modify_note)
         human_prompt = f"Context:\n{json.dumps(context, default=str, indent=2)}"
         with step_timer(run_id, "features_agent", "decide_next_step"):
             try:
@@ -228,6 +240,7 @@ def features_agent(state: AgentState) -> dict:
         "run_memory": [f"[Features] {c}" for c in loop_result["condensed_history"]],
         "iteration": state.get("iteration", 0) + loop_result["iterations"],
         "last_executed_agent": "features",
+        "modifications": None,
     }
 
     # Hard block vs. advisory — destructive action always blocks; guided mode also blocks on unresolved exploration:

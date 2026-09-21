@@ -1,103 +1,79 @@
-# Byte-compiled / optimized / DLL files
+# ─── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
-*$py.class
-
-# C extensions
+*.pyo
+*.pyd
 *.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
 *.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+wheels/
+sdist/
+.installed.cfg
+.Python
 
-# PyInstaller
-*.manifest
-*.spec
+# ─── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py.class
-.hypothesis/
-.pytest_cache/
-cover/
-
-# Environments
+# ─── Environment variables ─────────────────────────────────────────────────────
 .env
 .env.local
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
 
-# IDE & OS files
+# ─── Testing & coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.tox/
+.nox/
+.hypothesis/
+
+# ─── IDE & OS ─────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
-# Agent execution state & benchmark output logs
-state/*
-!state/.gitkeep
-benchmark/results/*
-!benchmark/results/.gitkeep
+# ─── Runtime logs & events ────────────────────────────────────────────────────
+logs/
+logs_smoke/
 *.log
 *.events.jsonl
 
-# Runtime generated artifacts & logs
+# ─── Agent runtime artifacts ──────────────────────────────────────────────────
 artifacts/
-logs/
-logs_smoke/
-smoke_data/
+runs/
+checkpoints.db*
+runs_index.db*
 scratch/
 memory/store/*.jsonl
+smoke_data/
 
-# environment variables
-.env
-.env.local
+# ─── Data files (uploaded datasets, exports, test CSVs) ───────────────────────
+data/
 
-# Personal review notes
-review/
-
-# Node.js & Frontend
+# ─── Frontend ─────────────────────────────────────────────────────────────────
 node_modules/
-frontend/dist/
 frontend/node_modules/
+frontend/dist/
 *.tsbuildinfo
 .oxlintcache
 
-# Notebook
+# ─── Notebooks ────────────────────────────────────────────────────────────────
 Notebook/
 
-# Runs
-runs/*
-checkpoints.db*
-runs_index.db*
+# ─── Personal review notes ────────────────────────────────────────────────────
+review/
+
+# ─── Misc build artifacts ─────────────────────────────────────────────────────
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt

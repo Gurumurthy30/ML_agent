@@ -62,13 +62,20 @@ def human_approval_node(state: AgentState) -> dict:
 
     log_event(run_id, "human_approval", "resumed", decision=decision)
     approval_status = decision.get("approval_status")
+    modifications = decision.get("modifications")
     update = {
         "approval_status": approval_status,
+        "modifications": modifications,
         "requires_human_approval": False,
     }
 
+    # Persist modifications into feature_plan if present
+    feature_plan = dict(state.get("feature_plan") or {})
+    if modifications:
+        feature_plan["modifications"] = modifications
+        update["feature_plan"] = feature_plan
+
     # If approved, adopt the proposed output dataset path from the reviewed feature plan
-    feature_plan = state.get("feature_plan") or {}
     proposed_path = feature_plan.get("proposed_output_path")
     if approval_status == "approved" and proposed_path and os.path.exists(proposed_path):
         update["transformed_dataset_path"] = proposed_path

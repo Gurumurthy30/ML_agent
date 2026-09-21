@@ -52,3 +52,13 @@ export interface ResumePayload {
   approval_status: 'approved' | 'modify' | 'reject';
   modifications?: string;
 }
+
+export interface DatasetPreviewResponse {
+  run_id: string;
+  dataset_path: string;
+  is_transformed: boolean;
+  columns: string[];
+  total_rows: number;
+  total_columns: number;
+  preview_rows: Record<string, any>[];
+}

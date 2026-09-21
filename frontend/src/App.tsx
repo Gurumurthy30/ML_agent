@@ -11,6 +11,7 @@ import { LogsTab } from './components/tabs/LogsTab';
 import { ErrorsTab } from './components/tabs/ErrorsTab';
 import { ReportTab } from './components/tabs/ReportTab';
 import { DebugTab } from './components/tabs/DebugTab';
+import { DatasetTab } from './components/tabs/DatasetTab';
 import { CreateRunModal } from './components/modals/CreateRunModal';
 import { CompareRunsModal } from './components/modals/CompareRunsModal';
 
@@ -28,6 +29,7 @@ import {
   AlertOctagon,
   FileText,
   Code,
+  Database,
 } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -43,7 +45,7 @@ export const App: React.FC = () => {
 
   // Tab state
   const [activeTab, setActiveTab] = useState<
-    'flow' | 'feature_plan' | 'leaderboard' | 'judge' | 'logs' | 'errors' | 'report' | 'debug'
+    'flow' | 'dataset' | 'feature_plan' | 'leaderboard' | 'judge' | 'logs' | 'errors' | 'report' | 'debug'
   >('flow');
 
   // Attempts and errors ledger
@@ -120,7 +122,7 @@ export const App: React.FC = () => {
   );
 
   interface TabItem {
-    id: 'flow' | 'feature_plan' | 'leaderboard' | 'judge' | 'logs' | 'errors' | 'report' | 'debug';
+    id: 'flow' | 'dataset' | 'feature_plan' | 'leaderboard' | 'judge' | 'logs' | 'errors' | 'report' | 'debug';
     label: string;
     icon: any;
     count?: number;
@@ -128,6 +130,7 @@ export const App: React.FC = () => {
 
   const tabsConfig: TabItem[] = [
     { id: 'flow', label: 'Pipeline Flow', icon: GitCommit },
+    { id: 'dataset', label: 'Dataset', icon: Database },
     { id: 'feature_plan', label: 'Feature Plan', icon: Columns },
     { id: 'leaderboard', label: 'Leaderboard', icon: Trophy, count: attempts.length },
     { id: 'judge', label: 'Judge', icon: Gavel },
@@ -218,6 +221,7 @@ export const App: React.FC = () => {
                     status={selectedRun.status}
                   />
                 )}
+                {activeTab === 'dataset' && <DatasetTab run={selectedRun} />}
                 {activeTab === 'feature_plan' && <FeaturePlanTab events={events} />}
                 {activeTab === 'leaderboard' && (
                   <LeaderboardTab

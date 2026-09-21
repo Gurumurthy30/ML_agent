@@ -20,6 +20,7 @@ import os
 import time
 import zipfile
 import pytest
+from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from api.main import app
@@ -397,4 +398,96 @@ def test_end_to_end_guided_run_lifecycle(client, sample_csv, monkeypatch):
     export_res = client.get(f"/runs/{run_id}/export")
     assert export_res.status_code == 200
     assert export_res.headers["content-type"] == "application/zip"
+
+
+# ---------------------------------------------------------------------------
+# 11. GET /runs/{id}/dataset-preview
+# ---------------------------------------------------------------------------
+def test_dataset_preview_csv(client, tmp_path):
+    csv_file = tmp_path / "test_data.csv"
+    csv_file.write_text("col_a,col_b,col_c\n1,foo,0.5\n2,bar,1.5\n3,baz,2.5\n")
+    run_id = f"test_prev_csv_{int(time.time()*1000)}"
+    register_run(run_id, dataset_path=str(csv_file))
+
+    res = client.get(f"/runs/{run_id}/dataset-preview?limit=2")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["run_id"] == run_id
+    assert data["dataset_path"] == str(csv_file)
+    assert data["is_transformed"] is False
+    assert data["columns"] == ["col_a", "col_b", "col_c"]
+    assert data["total_rows"] == 3
+    assert data["total_columns"] == 3
+    assert len(data["preview_rows"]) == 2
+    assert data["preview_rows"][0] == {"col_a": 1, "col_b": "foo", "col_c": 0.5}
+
+
+def test_dataset_preview_parquet(client, tmp_path):
+    import pandas as pd
+    df = pd.DataFrame({"x": [10, 20], "y": ["alpha", "beta"]})
+    pq_file = tmp_path / "test_data.parquet"
+    df.to_parquet(pq_file)
+
+    run_id = f"test_prev_pq_{int(time.time()*1000)}"
+    register_run(run_id, dataset_path=str(pq_file))
+
+    res = client.get(f"/runs/{run_id}/dataset-preview")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["columns"] == ["x", "y"]
+    assert data["total_rows"] == 2
+    assert len(data["preview_rows"]) == 2
+
+
+def test_dataset_preview_transformed_preference(client, tmp_path, monkeypatch):
+    orig_csv = tmp_path / "orig.csv"
+    orig_csv.write_text("orig_col\n1\n")
+    trans_csv = tmp_path / "trans.csv"
+    trans_csv.write_text("trans_col_1,trans_col_2\n10,20\n")
+
+    run_id = f"test_prev_trans_{int(time.time()*1000)}"
+    register_run(run_id, dataset_path=str(orig_csv))
+
+    # Mock get_pipeline_graph state returning transformed_dataset_path
+    mock_state = MagicMock()
+    mock_state.values = {
+        "dataset_path": str(orig_csv),
+        "transformed_dataset_path": str(trans_csv),
+    }
+    mock_graph = MagicMock()
+    mock_graph.get_state.return_value = mock_state
+    monkeypatch.setattr("api.main.get_pipeline_graph", lambda: mock_graph)
+
+    res = client.get(f"/runs/{run_id}/dataset-preview")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["is_transformed"] is True
+    assert data["dataset_path"] == str(trans_csv)
+    assert data["columns"] == ["trans_col_1", "trans_col_2"]
+
+
+def test_dataset_preview_404_unknown_run(client):
+    res = client.get("/runs/non_existent_run_999/dataset-preview")
+    assert res.status_code == 404
+    assert "Run not found" in res.json()["detail"]
+
+
+def test_dataset_preview_404_missing_file(client):
+    run_id = f"test_prev_nofile_{int(time.time()*1000)}"
+    register_run(run_id, dataset_path="non_existent_path_to_file.csv")
+
+    res = client.get(f"/runs/{run_id}/dataset-preview")
+    assert res.status_code == 404
+    assert "Dataset file not found" in res.json()["detail"]
+
+
+def test_dataset_preview_422_corrupted_file(client, tmp_path):
+    corrupt_file = tmp_path / "corrupted.parquet"
+    corrupt_file.write_bytes(b"not a real parquet file contents")
+    run_id = f"test_prev_corrupt_{int(time.time()*1000)}"
+    register_run(run_id, dataset_path=str(corrupt_file))
+
+    res = client.get(f"/runs/{run_id}/dataset-preview")
+    assert res.status_code == 422
+    assert "Failed to parse dataset file" in res.json()["detail"]
 

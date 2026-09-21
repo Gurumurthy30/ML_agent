@@ -15,6 +15,10 @@ Implements:
   - POST /runs/{id}/tags: Update run tags
   - POST /runs/{id}/baseline: Set run baseline flag and score
 """
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import asyncio
 import json
 import logging
@@ -344,6 +348,90 @@ def get_pipeline_run_errors(run_id: str):
     if not run:
         raise HTTPException(status_code=404, detail=f"Run not found: '{run_id}'")
     return get_run_errors(run_id)
+
+
+@app.get("/runs/{run_id}/dataset-preview")
+def get_pipeline_run_dataset_preview(run_id: str, limit: int = 50):
+    """
+    Retrieve column names and preview rows for the run's dataset.
+    Reads transformed_dataset_path if present, else dataset_path, via pandas.
+    Handles missing or unreadable files with clean 404 or 422 HTTP responses.
+    """
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run not found: '{run_id}'")
+
+    # 1. Determine target dataset path
+    target_path = None
+    is_transformed = False
+
+    try:
+        graph = get_pipeline_graph()
+        state = graph.get_state({"configurable": {"thread_id": run_id}})
+        if state and hasattr(state, "values") and isinstance(state.values, dict):
+            trans_path = state.values.get("transformed_dataset_path")
+            if trans_path and os.path.exists(trans_path):
+                target_path = trans_path
+                is_transformed = True
+            elif state.values.get("dataset_path"):
+                target_path = state.values.get("dataset_path")
+    except Exception:
+        pass
+
+    if not target_path:
+        target_path = run.get("dataset_path")
+
+    if not target_path or not os.path.exists(target_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dataset file not found at '{target_path or 'unknown'}' for run '{run_id}'.",
+        )
+
+    # 2. Read dataset via pandas
+    import pandas as pd
+    import numpy as np
+
+    try:
+        if target_path.endswith((".parquet", ".pq")):
+            df = pd.read_parquet(target_path)
+        else:
+            df = pd.read_csv(target_path)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to parse dataset file '{target_path}': {exc}",
+        )
+
+    total_rows = len(df)
+    total_cols = len(df.columns)
+    preview_df = df.head(max(1, min(limit, 500)))
+
+    # Convert to object dtype first so None values are not coerced back to float nan
+    raw_records = (
+        preview_df.astype(object)
+        .where(pd.notnull(preview_df), None)
+        .to_dict(orient="records")
+    )
+    import math
+    preview_records = []
+    for row in raw_records:
+        clean_row = {}
+        for k, v in row.items():
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                clean_row[k] = None
+            else:
+                clean_row[k] = v
+        preview_records.append(clean_row)
+
+    return {
+        "run_id": run_id,
+        "dataset_path": target_path,
+        "is_transformed": is_transformed,
+        "columns": [str(c) for c in df.columns],
+        "total_rows": total_rows,
+        "total_columns": total_cols,
+        "preview_rows": preview_records,
+    }
 
 
 @app.post("/runs/{run_id}/resume")

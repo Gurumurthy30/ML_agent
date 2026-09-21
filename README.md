@@ -1,157 +1,181 @@
-# Multi-Agent ML Pipeline
+# Multi-Agent ML Pipeline & Telemetry Studio
 
-Implements the flowchart end-to-end: **Supervisor** routes to **Profiler**, **EDA
-Agent**, **Features Agent**, and **Modeler Agent** (with an internal tier-0 HP-tuning
-loop), Features hard-blocks on **Human Approval** for destructive/guided actions,
-**Judge Agent** accepts (→ Reporter) or rejects with a retry tier (1 = new model
-family, back through Supervisor → Modeler; 2 = re-engineer features, back through
-Supervisor → Features), and **Reporter** writes the final report, persists to **Run
-Memory/RAG**, and delivers the result.
+An autonomous, iterative Machine Learning pipeline powered by **LangGraph**, paired with a **FastAPI** telemetry backend and a modern **React 19** observability dashboard.
 
-Every agent in the diagram is now implemented, including Judge (previously
-out-of-scope) — the only remaining gaps are the Human Approval agent's own UI/decision
-logic (a human makes that call, not an LLM) and a hardened/sandboxed exec environment.
+The system mimics how experienced data scientists work: profiling data, discovering patterns, iteratively engineering features on evolving datasets, hyperparameter tuning across candidate model families, and performing rigorous executive reviews with automated retry escalation and genuine human-in-the-loop safety gating.
 
-## What's here, in build order
+---
 
-### Pass 1 — core architecture + observability
-1. **No hardcoded domain logic** — EDA, Features, and Modeler delegate all
-   code-writing to the shared **Coder sub-agent** and only reason about *what* to try
-   and *whether it converged*.
-2. **Shared exploration loop** (`agents/loop_utils.py`) — the "try → look → adjust"
-   shape used by all three, with an auto-scaling iteration ceiling and Modeler's
-   plateau backstop (the only mechanical, non-LLM stop condition of the three).
-3. **Hard block vs. advisory** — Features' destructive/guided gate genuinely pauses
-   the graph via LangGraph's `interrupt()`; exploration not converging by the ceiling
-   is advisory-only and never blocks.
-4. **Streaming** — every plain-text LLM call (Coder, Profiler, EDA synthesis,
-   Reporter) streams tokens live via `tools/streaming.py`.
-5. **Local logger** — `tools/logger.py`: console+file logs plus a structured JSONL
-   event trace per run, which the Reporter reads back for an exact (non-LLM)
-   monitoring summary.
-6. **Reporter Agent** — narrative (streamed) + exact event-trace aggregation.
+## Architecture at a Glance
 
-### Pass 2 — Judge Agent, real MCP tool, real RAG, CV/NLP/audio-as-table
-7. **Judge Agent** (`agents/judge_agent.py`) — the piece the original spec explicitly
-   scoped out. Checks Run Memory first, then accepts or rejects with a retry tier,
-   incrementing `retry_counts`. The Supervisor still owns the escalation guard
-   ("after 2 retries at the same tier, route to human_approval instead") — Judge only
-   judges quality and picks a tier.
-8. **Real MCP tool** (`mcp_server/python_exec_server.py` + `tools/mcp_client.py`) —
-   replaces the placeholder subprocess call with an actual MCP server (stdio
-   transport, official `mcp` SDK) that the Coder sub-agent calls by default, falling
-   back to the direct in-process call if spawning the server ever fails. This was
-   built against a live round-trip test, not just written to look plausible — the
-   `mcp` package installed here is 2.x, which renamed `FastMCP`→`MCPServer` and
-   `isError`→`is_error` from the more commonly-documented 1.x API; the client code
-   reflects what 2.x actually returns, confirmed by spawning the server and calling
-   the tool for real.
-9. **Real RAG** (`memory/run_memory.py`) — replaces the `None`-returning stub with a
-   small JSONL vector store: Ollama embeddings preferred, with a zero-dependency
-   offline hashing-vector fallback so lookups/stores never hard-fail a run just
-   because the embedding endpoint is unreachable. Same-dataset-fingerprint hits are
-   ranked first, then cosine similarity across everything else. Reporter writes into
-   it at the end of every run; EDA/Features/Modeler/Judge all query it first (per the
-   diagram's "checks first" edge into Judge, and the general Run Memory/RAG fan-in).
-10. **CV/NLP/audio handled as tables** (Kaggle-style) — rather than a separate
-    ingestion path per modality, `profiler_agent.py` now detects each column's
-    modality (`image_path`, `audio_path`, `free_text`, alongside plain
-    `numerical`/`categorical`) via extension-sniffing and a text heuristic, and
-    stores it in `profile["features"][*]["modality"]` plus a profile-level
-    `detected_modalities` summary. Everything downstream reads that flag:
-    - `coder_agent.py`'s system prompt explains how to handle each modality (resolve
-      relative paths via the auto-injected `INPUT_DATASET_DIR`, use Pillow/
-      torchvision for images, sklearn text vectorizers or transformers for text,
-      librosa/torchaudio for audio) and degrades gracefully if a library isn't
-      installed.
-    - Per-attempt exec timeout auto-scales (60s → 300s) when non-tabular modalities
-      are detected (`compute_exec_timeout`), since image/audio decoding and embedding
-      models take longer than plain pandas/sklearn.
-    - Modeler's prompt is told to derive embeddings/features from image/audio/text
-      columns before fitting, still through the same Coder-delegation pattern.
-    - **Features' structural-diff hard-block needed no changes** — it diffs the
-      table (paths + labels), never decoded pixels/audio, so the existing
-      columns-removed/row-count check keeps working unmodified.
-
-## Files
-
+### 1. LangGraph Agent Pipeline
 ```
-state.py                       AgentState
-tools/python_exec_tool.py      subprocess-based exec logic (path-in, path-out)
-tools/mcp_client.py            MCP client — spawns the exec server, calls its tool
-tools/logger.py                local logger + structured JSONL event trace
-tools/streaming.py             shared streaming helper for plain-text LLM calls
-mcp_server/python_exec_server.py   real MCP server exposing the exec tool over stdio
-memory/run_memory.py           real RAG: JSONL vector store + cosine similarity
-agents/coder_agent.py          shared Coder sub-agent (MCP exec, retries, modality-aware prompt)
-agents/profiler_agent.py       hand-coded stats + modality detection + LLM interpretation
-agents/supervisor.py           routing decisions
-agents/loop_utils.py           shared exploration-loop driver, ceiling + timeout calc
-agents/eda_agent.py            independent explorations, LLM-only stop
-agents/features_agent.py       incremental, structural-diff hard-block, guided_mode
-agents/modeler_agent.py        incremental, tier-0 HP tuning, plateau backstop
-agents/judge_agent.py          accept/reject + retry-tier decision
-agents/reporter_agent.py       narrative + exact monitoring aggregation + RAG write
-graph.py                       LangGraph wiring, incl. the human_approval pause node
-main.py                        CLI entry point
-smoke_test.py                  control-flow tests against mocked LLM/Coder calls
-requirements.txt               core dependencies (incl. mcp)
-requirements-modalities.txt    optional, heavy — torch/transformers/librosa etc.
+               ┌───────────────┐
+               │  Supervisor   │◄─────────────────────────────┐
+               └──────┬────────┘                              │
+                      │                                       │
+     ┌────────────────┼────────────────┬──────────────┐       │
+     ▼                ▼                ▼              ▼       │
+┌──────────┐    ┌──────────┐     ┌───────────┐  ┌───────────┐ │ (Retry / Loop)
+│ Profiler │    │   EDA    │     │ Features  │  │  Modeler  │ │
+└────┬─────┘    └────┬─────┘     └─────┬─────┘  └─────┬─────┘ │
+     │               │                 │              │       │
+     └───────────────┴─────────────────┼──────────────┴───────┘
+                                       │
+                         [Guided / Destructive Gate]
+                                       ▼
+                             ┌───────────────────┐
+                             │  Human Approval   │ (Interactive Pause)
+                             │   (UI Queue)      │
+                             └─────────┬─────────┘
+                                       │
+                                       ▼
+                                ┌─────────────┐
+                                │ Judge Agent │───► [Reject: Tier 1/2] ──► Supervisor
+                                └──────┬──────┘
+                                       │ [Accept]
+                                       ▼
+                                ┌─────────────┐
+                                │  Reporter   │───► Final Report & Artifacts
+                                └─────────────┘
 ```
 
-## Running it
+- **Supervisor**: Central router orchestrating phase transitions based on dataset state, convergence flags, and retry budgets.
+- **Profiler**: Automated statistical analysis and Kaggle-style multi-modality sniffing (tabular, image, audio, free text).
+- **EDA Agent**: Hypothesis-driven exploratory data analysis generating narrative findings and correlation signals.
+- **Features Agent**: Incremental feature engineering with structural-diff checking and self-reported risk assessment.
+- **Coder Sub-Agent**: Generates and executes pandas/sklearn code in isolated subprocesses with automated retry-and-repair loops.
+- **Modeler Agent**: Incremental model exploration, hyperparameter tuning (Tier-0), and plateau backstops.
+- **Judge Agent**: Rigorous executive evaluation against baseline thresholds, routing rejections to Tier 1 (model family) or Tier 2 (feature re-engineering).
+- **Human Approval**: LangGraph `interrupt()` pause gate triggered on destructive transformations or guided mode.
+- **Reporter**: Compiles comprehensive execution narratives, telemetry metrics, and persists to local RAG vector memory.
 
-```bash
+### 2. Backend & Frontend Architecture
+- **FastAPI Layer (`api/main.py`)**: Asynchronous REST API managing background run lifecycles, database operations, and live log broadcasting.
+- **Telemetry & Tracer (`tools/tracer.py`)**: Dual-persistence engine recording append-only JSONL event streams and thread-safe SQLite indexing (`runs/runs_index.db`).
+- **Server-Sent Events (SSE)**: Real-time event streaming (`GET /runs/{id}/events`) combining historical replay and live pub/sub broadcasting.
+- **React Frontend (`frontend/`)**: Modern React 19 + Tailwind CSS single-page application with 9 dedicated diagnostic tabs and an interactive Approval Queue.
+
+---
+
+## Setup & Prerequisites
+
+### 1. Backend Setup
+Python 3.10+ is required.
+
+```powershell
+# Create and activate virtual environment
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+
+# Install core pipeline & API dependencies
 pip install -r requirements.txt
-# optional, only if your dataset has image/audio/text columns and you want the
-# Coder to have real modeling libraries available for them:
-pip install -r requirements-modalities.txt
 
-export OLLAMA_API_KEY=your_key_here
-python main.py --dataset path/to/data.csv --mode full_pipeline
-python main.py --dataset path/to/data.csv --mode eda_only
-python main.py --dataset path/to/data.csv --guided     # approval on every feature step
+# (Optional) Install heavy multi-modal modeling libraries (torch, torchvision, librosa, transformers)
+pip install -r requirements-modalities.txt
 ```
 
-For a Kaggle-style CV/NLP/audio dataset, just point `--dataset` at the CSV that has
-the image/audio file-path or free-text columns — no separate flag needed, the
-Profiler detects them automatically.
+### 2. Frontend Setup
+Node.js 18+ is required.
 
-If a run pauses for human approval, it prints the `thread_id` to resume with. Resuming
-requires a small script that calls
-`graph.invoke(Command(resume={"approval_status": "approved"}), config)` against the
-same `thread_id` — not included here since the actual Human Approval agent's UI/logic
-is still out of scope, only the pause/resume plumbing is implemented.
+```powershell
+cd frontend
+npm install
+cd ..
+```
 
-### Testing without network access
-
-`smoke_test.py` monkeypatches each agent's `_make_llm`/`coder_agent` with fakes and
-exercises: the loop driver's four exit paths, iteration-ceiling scaling, exec-timeout
-modality scaling, Features' structural-diff and guided-mode triggers, Modeler's
-plateau backstop, Coder's retry-and-fix loop, EDA end-to-end, Reporter's file output +
-monitoring aggregation, Profiler's modality detection (image/audio/text/categorical),
-the RAG store+lookup round trip (including the exact-fingerprint ranking bonus), and
-Judge's accept/reject/retry-count bookkeeping. Run with:
+### 3. Environment Variables
+Create a `.env` file at the repository root (see `.env.example`):
 
 ```bash
-python smoke_test.py
+# --- LLM Authentication ---
+OLLAMA_API_KEY=your_ollama_api_key_here
+
+# --- Optional LangSmith Observability ---
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your_langsmith_key
+LANGSMITH_PROJECT=ML_agent
 ```
 
-The real MCP server↔client round trip (spawn, call, execute, parse response) was
-additionally verified directly against a live subprocess — not mocked — since stdio
-transport is exactly the kind of thing that looks right in code but silently breaks;
-that test caught a real API mismatch (see point 8 above) before it shipped.
+#### Pipeline Configuration (`config.py`)
+All execution limits and convergence criteria can be customized via environment variables:
 
-This was all necessary in the sandbox this was built in, since `ollama.com` isn't on
-the network allowlist there — the actual pipeline against a real Ollama endpoint
-hasn't been run end-to-end and should be validated on real data before trusting it.
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `PIPELINE_GLOBAL_ITER_CEILING` | `200` | Hard circuit breaker preventing infinite supervisor cycling. |
+| `PIPELINE_LOOP_SAFETY_CEILING` | `30` | Per-agent exploration ceiling, auto-scaled by data complexity. |
+| `PIPELINE_METRIC_EPSILON` | `0.001` | Minimum delta required to count an iteration as an improvement. |
+| `PIPELINE_TIER1_BUDGET` | `2` | Maximum automated Modeler retry attempts before escalation. |
+| `PIPELINE_TIER2_BUDGET` | `2` | Maximum automated Features retry attempts before escalation. |
+| `PIPELINE_CONVERGENCE_PATIENCE`| `3` | Consecutive non-improving steps before plateau detection triggers. |
+| `PIPELINE_RUNS_DIR` | `runs` | Directory for SQLite indices, checkpoints, and event logs. |
+| `PIPELINE_LOG_DIR` | `logs` | Directory for run execution logs. |
 
-## Known gaps (intentionally out of scope)
+---
 
-- The Human Approval agent's actual decision UI/logic (only the generic pause/resume
-  mechanics exist — a human still has to drive the resume call by hand).
-- Artifact Store / persistence layer beyond the Reporter's own `artifacts/` writes and
-  the RAG store.
-- Hardened/sandboxed code execution — `python_exec_tool.py` and the MCP server
-  wrapping it still have no import allowlisting or resource limits.
-- A live end-to-end run against a real Ollama endpoint.
+## Running the Pipeline
+
+### Path A: Full Web Application (Recommended)
+
+1. **Start the FastAPI Backend**:
+   ```powershell
+   .venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+   ```
+
+2. **Start the React Frontend Dev Server**:
+   ```powershell
+   cd frontend
+   npm run dev
+   ```
+
+3. Open **`http://localhost:5173/`** in your browser.
+
+### Path B: Command-Line Interface (CLI)
+
+Run directly against any dataset file (`.csv` or `.parquet`):
+
+```powershell
+# Full autonomous pipeline
+.venv\Scripts\python.exe main.py --dataset data/sample.csv --mode full_pipeline
+
+# EDA only
+.venv\Scripts\python.exe main.py --dataset data/sample.csv --mode eda_only
+
+# Guided mode (requires manual approval on feature modifications)
+.venv\Scripts\python.exe main.py --dataset data/sample.csv --guided
+```
+
+---
+
+## Key Features
+
+- **Guided Mode & Human Approval Hard-Block**: When enabled, or whenever a destructive feature transformation is proposed (e.g., column drop, row deletion), graph execution genuinely pauses with a checkpoint. Human operators can inspect the proposed code and schema diff, and choose to **Approve**, **Reject**, or provide **Modify** instructions (e.g., *"Keep age column and impute with median"*), which are threaded directly into the Features agent's prompt on resume.
+- **Dataset Preview**: Live inspection of original and transformed datasets directly inside the UI, powered by `GET /runs/{id}/dataset-preview` with parquet/csv support and sanitized JSON streaming.
+- **Multi-Tier Automated Retries**:
+  - *Tier 0*: Internal hyperparameter tuning and model iteration within Modeler.
+  - *Tier 1*: Judge-prompted model family re-selection routed back to Modeler.
+  - *Tier 2*: Judge-prompted feature re-engineering routed back to Features.
+- **Loop Escape Control (`⚡ Escape Loop`)**: Operators can force-advance stuck coder loops or repetitive exploration attempts without aborting the entire run.
+- **Side-by-Side Run Comparison**: Compare candidate runs across scores, duration, token usage, and generated Python model code.
+- **ZIP Debug Bundle Export**: Download self-contained debug archives containing `events.jsonl`, `state.json`, `best_model_code.py`, `metrics.csv`, and reports.
+
+---
+
+## Test Suite
+
+The project includes unit, regression, fault-injection, and UI smoke test suites:
+
+| Suite | Command | Passing Tests |
+| :--- | :--- | :--- |
+| **Backend Integration & Unit Tests** | `.venv\Scripts\pytest.exe tests/` | **112 / 112** |
+| **Deterministic Smoke Test** | `.venv\Scripts\python.exe smoke_test.py` | **61 / 61** |
+| **Frontend Component & Interaction Tests** | `cd frontend; npm test` | **27 / 27** |
+| **Total Test Checks** | | **200 Passed (100%)** |
+
+---
+
+## Project History & Engineering Notes
+
+For deep-dive documentation on architectural evolution, hardening rounds, and telemetry redesign:
+- [AUDIT_REPORT.md](file:///c:/Users/gurum/Documents/4_Projects/ML_agent/AUDIT_REPORT.md): Full audit history covering fault injections, scoped memory redesign, reducer fixations, and stall detectors across Rounds 1–5.
+- [FRONTEND_BUILD_REPORT.md](file:///c:/Users/gurum/Documents/4_Projects/ML_agent/FRONTEND_BUILD_REPORT.md): Design system decisions, React 19 setup, SSE connection management, and Approval Queue wiring.

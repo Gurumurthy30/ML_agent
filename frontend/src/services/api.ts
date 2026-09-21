@@ -124,3 +124,12 @@ export async function compareRuns(runA: string, runB: string): Promise<any> {
 export function getExportUrl(runId: string): string {
   return `${API_BASE}/runs/${encodeURIComponent(runId)}/export`;
 }
+
+export async function getDatasetPreview(runId: string, limit: number = 50): Promise<import('../types/run').DatasetPreviewResponse> {
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/dataset-preview?limit=${limit}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to fetch dataset preview (${res.status})`);
+  }
+  return res.json();
+}

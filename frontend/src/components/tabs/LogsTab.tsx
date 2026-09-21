@@ -8,6 +8,7 @@ interface LogsTabProps {
 
 interface GroupedTurn {
   id: string;
+  turnKey: string;
   parentAgent: string;
   iteration?: number;
   events: PipelineEvent[];
@@ -29,10 +30,11 @@ export const LogsTab: React.FC<LogsTabProps> = ({ events }) => {
     const iter = ev.parent_iteration || ev.iteration;
     const turnKey = `${parent}_${iter ?? 'main'}`;
 
-    if (!currentTurn || currentTurn.id !== turnKey) {
+    if (!currentTurn || currentTurn.turnKey !== turnKey) {
       if (currentTurn) turns.push(currentTurn);
       currentTurn = {
-        id: turnKey,
+        id: `${turnKey}_${turns.length}`,
+        turnKey,
         parentAgent: parent,
         iteration: iter,
         events: [ev],
