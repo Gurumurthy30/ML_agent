@@ -21,7 +21,7 @@ from tools.llm import get_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from state import AgentState
-from memory.run_memory import lookup_run_memory
+from utils.scoped_memory import format_open_memory_digest
 from tools.logger import get_logger, log_event, step_timer
 
 
@@ -56,10 +56,7 @@ def judge_agent(state: AgentState) -> dict:
     llm = _make_llm()
 
     profile = state.get("profile", {})
-    memory_query = (f"Judging a {state.get('task_type', 'unknown')} run, "
-                    f"metric: {profile.get('recommended_metric')}, "
-                    f"best_metric so far: {state.get('best_metric')}")
-    prior_memory = lookup_run_memory(state["dataset_fingerprint"], memory_query, run_id=run_id)
+    open_digest = format_open_memory_digest(state.get("open_summary_memory"), state=state)
 
     context = {
         "profile": profile,
@@ -70,7 +67,7 @@ def judge_agent(state: AgentState) -> dict:
         "task_type": state.get("task_type"),
         "retry_counts_so_far": state.get("retry_counts") or {},
         "current_retry_tier": state.get("retry_tier"),
-        "similar_past_runs": prior_memory,
+        "pipeline_summary": open_digest,
     }
 
     system_prompt = """You are the Judge agent. Evaluate whether the current
@@ -120,6 +117,9 @@ forever chasing marginal gains."""
     update = {
         "last_verdict": verdict.verdict,
         "judge_feedback": verdict.feedback,
+        "open_summary_memory": {
+            "judge": f"Verdict: {verdict.verdict}. Feedback: {verdict.feedback[:250]}"
+        },
         "run_memory": [f"[Judge] {verdict.verdict}: {verdict.feedback[:200]}"],
         "last_executed_agent": "judge",
     }

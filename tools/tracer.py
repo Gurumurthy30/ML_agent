@@ -45,8 +45,10 @@ class RunControl:
         self._pause_event.set()  # set = running, clear = paused
         self.stopped = False
         self.force_escalate = False
+        self.escaped = False
         self.prompt_override: Optional[str] = None
         self.retry_node: Optional[str] = None
+        self._lock = threading.Lock()
 
     def pause(self):
         self._pause_event.clear()
@@ -59,8 +61,11 @@ class RunControl:
 
     def wait_if_paused(self, timeout: Optional[float] = None) -> bool:
         """Blocks while paused. Returns False if timeout expired or stopped."""
+        start_t = time.time()
         while not self._pause_event.is_set():
             if self.stopped:
+                return False
+            if timeout is not None and (time.time() - start_t) >= timeout:
                 return False
             time.sleep(0.2)
         return True
@@ -77,6 +82,17 @@ class RunControl:
             self.force_escalate = False
             return True
         return False
+
+    def escape(self):
+        with self._lock:
+            self.escaped = True
+
+    def consume_escape(self) -> bool:
+        with self._lock:
+            if self.escaped:
+                self.escaped = False
+                return True
+            return False
 
     def set_prompt_override(self, prompt: str, node: Optional[str] = None):
         self.prompt_override = prompt
@@ -114,60 +130,162 @@ def _get_db() -> sqlite3.Connection:
     return conn
 
 
-def init_db():
+def run_migrations():
+    """
+    Applies schema migrations idempotently to runs_index.db.
+    Maintains a schema_migrations table and executes versioned DDL steps.
+    """
     with _DB_LOCK:
         conn = _get_db()
         try:
             with conn:
                 conn.execute("""
-                    CREATE TABLE IF NOT EXISTS runs (
-                        run_id TEXT PRIMARY KEY,
-                        created_at TEXT,
-                        updated_at TEXT,
-                        status TEXT,
-                        stop_reason TEXT,
-                        dataset_path TEXT,
-                        mode TEXT,
-                        guided_mode INTEGER,
-                        best_score REAL,
-                        baseline_score REAL,
-                        metric_name TEXT,
-                        total_attempts INTEGER DEFAULT 0,
-                        total_tokens_in INTEGER DEFAULT 0,
-                        total_tokens_out INTEGER DEFAULT 0,
-                        total_cost_usd REAL DEFAULT 0.0,
-                        duration_s REAL DEFAULT 0.0,
-                        error_count INTEGER DEFAULT 0,
-                        meta_json TEXT
+                    CREATE TABLE IF NOT EXISTS schema_migrations (
+                        version INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
                     );
                 """)
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS events (
-                        event_id TEXT PRIMARY KEY,
-                        run_id TEXT,
-                        seq INTEGER,
-                        ts TEXT,
-                        agent TEXT,
-                        event_type TEXT,
-                        phase TEXT,
-                        tier INTEGER,
-                        attempt INTEGER,
-                        intent TEXT,
-                        decision TEXT,
-                        metric_value REAL,
-                        metric_delta REAL,
-                        duration_ms INTEGER,
-                        tokens_in INTEGER,
-                        tokens_out INTEGER,
-                        cost_usd REAL,
-                        error_signature TEXT,
-                        payload_json TEXT
-                    );
-                """)
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_events_err_sig ON events(error_signature);")
+                cur = conn.execute("SELECT version FROM schema_migrations")
+                applied = {row["version"] for row in cur.fetchall()}
+
+                # Migration 1: Base schema (runs and events tables + initial indices)
+                if 1 not in applied:
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS runs (
+                            run_id TEXT PRIMARY KEY,
+                            created_at TEXT,
+                            updated_at TEXT,
+                            status TEXT,
+                            stop_reason TEXT,
+                            dataset_path TEXT,
+                            mode TEXT,
+                            guided_mode INTEGER,
+                            best_score REAL,
+                            baseline_score REAL,
+                            metric_name TEXT,
+                            total_attempts INTEGER DEFAULT 0,
+                            total_tokens_in INTEGER DEFAULT 0,
+                            total_tokens_out INTEGER DEFAULT 0,
+                            total_cost_usd REAL DEFAULT 0.0,
+                            duration_s REAL DEFAULT 0.0,
+                            error_count INTEGER DEFAULT 0,
+                            meta_json TEXT
+                        );
+                    """)
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS events (
+                            event_id TEXT PRIMARY KEY,
+                            run_id TEXT,
+                            seq INTEGER,
+                            ts TEXT,
+                            agent TEXT,
+                            event_type TEXT,
+                            phase TEXT,
+                            tier INTEGER,
+                            attempt INTEGER,
+                            intent TEXT,
+                            decision TEXT,
+                            metric_value REAL,
+                            metric_delta REAL,
+                            duration_ms INTEGER,
+                            tokens_in INTEGER,
+                            tokens_out INTEGER,
+                            cost_usd REAL,
+                            error_signature TEXT,
+                            payload_json TEXT
+                        );
+                    """)
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_err_sig ON events(error_signature);")
+                    conn.execute(
+                        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                        (1, "base_schema", datetime.now(timezone.utc).isoformat())
+                    )
+
+                # Migration 2: Add explicit baseline & tags/labels to runs table
+                if 2 not in applied:
+                    cur = conn.execute("PRAGMA table_info(runs)")
+                    existing_cols = {row["name"] for row in cur.fetchall()}
+                    if "is_baseline" not in existing_cols:
+                        conn.execute("ALTER TABLE runs ADD COLUMN is_baseline INTEGER DEFAULT 0;")
+                    if "baseline_run_id" not in existing_cols:
+                        conn.execute("ALTER TABLE runs ADD COLUMN baseline_run_id TEXT DEFAULT NULL;")
+                    if "tags" not in existing_cols:
+                        conn.execute("ALTER TABLE runs ADD COLUMN tags TEXT DEFAULT '[]';")
+                    if "labels" not in existing_cols:
+                        conn.execute("ALTER TABLE runs ADD COLUMN labels TEXT DEFAULT '{}';")
+                    conn.execute(
+                        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                        (2, "baseline_and_tags_labels", datetime.now(timezone.utc).isoformat())
+                    )
+
+                # Migration 3: Composite indices covering (run_id, phase) and (run_id, agent, event_type)
+                if 3 not in applied:
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run_phase ON events(run_id, phase);")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run_agent_type ON events(run_id, agent, event_type);")
+                    conn.execute(
+                        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                        (3, "phase_and_agent_indices", datetime.now(timezone.utc).isoformat())
+                    )
+
+                # Migration 4: Materialized cache table for attempts and errors
+                if 4 not in applied:
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS run_materialized_cache (
+                            run_id TEXT PRIMARY KEY,
+                            last_seq INTEGER,
+                            attempts_json TEXT,
+                            errors_json TEXT,
+                            updated_at TEXT
+                        );
+                    """)
+                    conn.execute(
+                        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                        (4, "run_materialized_cache", datetime.now(timezone.utc).isoformat())
+                    )
+
+                # Migration 5: Adaptive controller state persistence across worker processes
+                if 5 not in applied:
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS adaptive_ideas (
+                            run_id TEXT NOT NULL,
+                            idea_id TEXT NOT NULL,
+                            phase TEXT NOT NULL,
+                            tier INTEGER NOT NULL,
+                            summary TEXT NOT NULL,
+                            details_json TEXT,
+                            outcome TEXT,
+                            ts REAL
+                        );
+                    """)
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_adaptive_ideas_run_phase ON adaptive_ideas(run_id, phase);")
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS adaptive_errors (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            run_id TEXT NOT NULL,
+                            sig TEXT NOT NULL,
+                            error_type TEXT,
+                            ts REAL
+                        );
+                    """)
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_adaptive_errors_run ON adaptive_errors(run_id);")
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS adaptive_runs (
+                            run_id TEXT PRIMARY KEY,
+                            start_time REAL
+                        );
+                    """)
+                    conn.execute(
+                        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                        (5, "adaptive_controller_persistence", datetime.now(timezone.utc).isoformat())
+                    )
         finally:
             conn.close()
+
+
+def init_db():
+    run_migrations()
 
 
 init_db()
@@ -225,6 +343,26 @@ def _run_events_path(run_id: str) -> str:
 
 def _legacy_events_path(run_id: str) -> str:
     return os.path.join(LOG_DIR, f"{run_id}.events.jsonl")
+
+
+# ---------------------------------------------------------------------------
+# SQLite Payload Truncation (Hot path compact index, full in JSONL)
+# ---------------------------------------------------------------------------
+SQLITE_PAYLOAD_MAX_STR_LEN = 2048
+
+
+def _truncate_for_sqlite(val: Any, max_len: int = SQLITE_PAYLOAD_MAX_STR_LEN) -> Any:
+    """Truncate large text payloads (code, stdout, stderr, prompt) for compact SQLite storage,
+    leaving the full content in the JSONL files on disk."""
+    if isinstance(val, str):
+        if len(val) > max_len:
+            return val[:max_len] + f"... [TRUNCATED {len(val) - max_len} chars in SQLite index; full payload in JSONL]"
+        return val
+    elif isinstance(val, dict):
+        return {k: _truncate_for_sqlite(v, max_len=max_len) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [_truncate_for_sqlite(v, max_len=max_len) for v in val]
+    return val
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +498,7 @@ def record_event(
             conn = _get_db()
             try:
                 with conn:
+                    sqlite_clean_record = _truncate_for_sqlite(clean_record)
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO events (
@@ -388,7 +527,7 @@ def record_event(
                             tout,
                             cost_usd,
                             err_sig,
-                            json.dumps(clean_record),
+                            json.dumps(sqlite_clean_record),
                         ),
                     )
 
@@ -458,10 +597,16 @@ def register_run(
     mode: str = "full_pipeline",
     guided_mode: bool = False,
     metric_name: Optional[str] = None,
+    is_baseline: bool = False,
+    baseline_score: Optional[float] = None,
+    tags: Optional[List[str]] = None,
+    labels: Optional[Dict[str, str]] = None,
     meta: Optional[Dict[str, Any]] = None,
 ):
     """Insert initial record for a run in SQLite."""
     now = datetime.now(timezone.utc).isoformat()
+    tags_json = json.dumps(tags or [])
+    labels_json = json.dumps(labels or {})
     with _DB_LOCK:
         conn = _get_db()
         try:
@@ -470,8 +615,9 @@ def register_run(
                     """
                     INSERT OR REPLACE INTO runs (
                         run_id, created_at, updated_at, status, dataset_path,
-                        mode, guided_mode, metric_name, meta_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        mode, guided_mode, metric_name, is_baseline, baseline_score,
+                        tags, labels, meta_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -482,8 +628,83 @@ def register_run(
                         mode,
                         1 if guided_mode else 0,
                         metric_name,
+                        1 if is_baseline else 0,
+                        baseline_score,
+                        tags_json,
+                        labels_json,
                         json.dumps(meta or {}),
                     ),
+                )
+        finally:
+            conn.close()
+
+
+create_run = register_run
+
+
+def set_run_baseline(run_id: str, is_baseline: bool = True, baseline_score: Optional[float] = None) -> None:
+    """Explicitly mark a run as baseline or update its baseline reference."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE runs SET
+                        is_baseline = ?,
+                        baseline_score = COALESCE(?, baseline_score),
+                        updated_at = ?
+                    WHERE run_id = ?
+                    """,
+                    (1 if is_baseline else 0, baseline_score, now, run_id),
+                )
+        finally:
+            conn.close()
+
+
+def set_run_tags(run_id: str, tags: List[str]) -> None:
+    """Set the full list of tags for UI filtering."""
+    now = datetime.now(timezone.utc).isoformat()
+    tags_json = json.dumps(list(tags))
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE runs SET tags = ?, updated_at = ? WHERE run_id = ?",
+                    (tags_json, now, run_id),
+                )
+        finally:
+            conn.close()
+
+
+def add_run_tag(run_id: str, tag: str) -> None:
+    """Add a single tag to a run if not already present."""
+    run = get_run(run_id)
+    if not run:
+        return
+    existing_tags = []
+    try:
+        existing_tags = json.loads(run.get("tags") or "[]")
+    except Exception:
+        pass
+    if tag not in existing_tags:
+        existing_tags.append(tag)
+        set_run_tags(run_id, existing_tags)
+
+
+def set_run_labels(run_id: str, labels: Dict[str, str]) -> None:
+    """Set arbitrary key-value labels for run metadata."""
+    now = datetime.now(timezone.utc).isoformat()
+    labels_json = json.dumps(dict(labels))
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE runs SET labels = ?, updated_at = ? WHERE run_id = ?",
+                    (labels_json, now, run_id),
                 )
         finally:
             conn.close()
@@ -518,17 +739,30 @@ def update_run_status(
             conn.close()
 
 
-def list_runs(limit: int = 50) -> List[Dict[str, Any]]:
-    """Retrieve recent runs with high-level metrics for UI sidebar and comparison."""
+def list_runs(
+    limit: int = 50,
+    tag: Optional[str] = None,
+    is_baseline: Optional[bool] = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve recent runs with high-level metrics for UI sidebar and comparison,
+    supporting filtering by tag and/or is_baseline status."""
     with _DB_LOCK:
         conn = _get_db()
         try:
-            cursor = conn.execute(
-                """
-                SELECT * FROM runs ORDER BY created_at DESC LIMIT ?
-                """,
-                (limit,),
-            )
+            clauses = []
+            params: List[Any] = []
+            if is_baseline is not None:
+                clauses.append("is_baseline = ?")
+                params.append(1 if is_baseline else 0)
+            if tag:
+                clauses.append("tags LIKE ?")
+                params.append(f'%"{tag}"%')
+
+            where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            sql = f"SELECT * FROM runs {where_sql} ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+
+            cursor = conn.execute(sql, params)
             rows = cursor.fetchall()
             return [dict(r) for r in rows]
         finally:
@@ -574,13 +808,60 @@ def get_run_events(run_id: str, since_seq: int = 0, limit: Optional[int] = None)
 
 
 # ---------------------------------------------------------------------------
-# Attempt Ledger & Metric Progression
+# Materialized View Cache & Attempt/Error Aggregations
 # ---------------------------------------------------------------------------
-def get_run_attempts(run_id: str) -> List[Dict[str, Any]]:
-    """
-    Extract structured attempt ledger from recorded events:
-    model type, tier, CV score, delta, decision, duration, reason.
-    """
+_ATTEMPTS_CACHE: Dict[str, Tuple[int, List[Dict[str, Any]]]] = {}
+_ERRORS_CACHE: Dict[str, Tuple[int, List[Dict[str, Any]]]] = {}
+_MATERIALIZED_CACHE_LOCK = threading.Lock()
+
+
+def _get_current_max_seq(run_id: str) -> int:
+    with _RUN_SEQS_LOCK:
+        if run_id in _RUN_SEQS:
+            return _RUN_SEQS[run_id]
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            cur = conn.execute("SELECT MAX(seq) FROM events WHERE run_id = ?", (run_id,))
+            row = cur.fetchone()
+            return row[0] if (row and row[0] is not None) else 0
+        finally:
+            conn.close()
+
+
+def _persist_materialized_cache(
+    run_id: str,
+    last_seq: int,
+    attempts: Optional[List[Dict[str, Any]]] = None,
+    errors: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            with conn:
+                cur = conn.execute("SELECT attempts_json, errors_json FROM run_materialized_cache WHERE run_id = ?", (run_id,))
+                row = cur.fetchone()
+                prev_att = row["attempts_json"] if row else None
+                prev_err = row["errors_json"] if row else None
+
+                att_json = json.dumps(safe_json(attempts)) if attempts is not None else prev_att
+                err_json = json.dumps(safe_json(errors)) if errors is not None else prev_err
+
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO run_materialized_cache (run_id, last_seq, attempts_json, errors_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (run_id, last_seq, att_json, err_json, now),
+                )
+        except Exception as exc:
+            logger.debug("Could not persist materialized cache for %s: %s", run_id, exc)
+        finally:
+            conn.close()
+
+
+def _compute_run_attempts(run_id: str) -> List[Dict[str, Any]]:
     events = get_run_events(run_id)
     attempts = []
     baseline = None
@@ -625,18 +906,44 @@ def get_run_attempts(run_id: str) -> List[Dict[str, Any]]:
     return attempts
 
 
-# ---------------------------------------------------------------------------
-# Error Center Aggregations
-# ---------------------------------------------------------------------------
-def get_run_errors(run_id: str) -> List[Dict[str, Any]]:
+def get_run_attempts(run_id: str) -> List[Dict[str, Any]]:
     """
-    Aggregate errors for a run grouped by error_signature.
-    Includes frequency count, first/last seen, tracebacks, and loop detection.
+    Extract structured attempt ledger from recorded events.
+    Cached in memory and materialized in SQLite.
     """
+    curr_seq = _get_current_max_seq(run_id)
+    with _MATERIALIZED_CACHE_LOCK:
+        if run_id in _ATTEMPTS_CACHE:
+            cached_seq, cached_attempts = _ATTEMPTS_CACHE[run_id]
+            if cached_seq == curr_seq:
+                return [dict(a) for a in cached_attempts]
+
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            cur = conn.execute("SELECT last_seq, attempts_json FROM run_materialized_cache WHERE run_id = ?", (run_id,))
+            row = cur.fetchone()
+            if row and row["last_seq"] == curr_seq and row["attempts_json"]:
+                attempts = json.loads(row["attempts_json"])
+                with _MATERIALIZED_CACHE_LOCK:
+                    _ATTEMPTS_CACHE[run_id] = (curr_seq, attempts)
+                return [dict(a) for a in attempts]
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    attempts = _compute_run_attempts(run_id)
+    with _MATERIALIZED_CACHE_LOCK:
+        _ATTEMPTS_CACHE[run_id] = (curr_seq, attempts)
+    _persist_materialized_cache(run_id, curr_seq, attempts=attempts)
+    return attempts
+
+
+def _compute_run_errors(run_id: str) -> List[Dict[str, Any]]:
     events = get_run_events(run_id)
     groups: Dict[str, Dict[str, Any]] = {}
     last_sig = None
-    retry_loop_detected = False
 
     for ev in events:
         sig = ev.get("error_signature")
@@ -646,9 +953,6 @@ def get_run_errors(run_id: str) -> List[Dict[str, Any]]:
             sig = compute_error_signature(err_type, msg)
 
         if sig:
-            if sig == last_sig:
-                retry_loop_detected = True
-
             if sig not in groups:
                 groups[sig] = {
                     "error_signature": sig,
@@ -671,6 +975,140 @@ def get_run_errors(run_id: str) -> List[Dict[str, Any]]:
     result = list(groups.values())
     result.sort(key=lambda x: x["count"], reverse=True)
     return result
+
+
+def get_run_errors(run_id: str) -> List[Dict[str, Any]]:
+    """
+    Aggregate errors for a run grouped by error_signature.
+    Cached in memory and materialized in SQLite.
+    """
+    curr_seq = _get_current_max_seq(run_id)
+    with _MATERIALIZED_CACHE_LOCK:
+        if run_id in _ERRORS_CACHE:
+            cached_seq, cached_errors = _ERRORS_CACHE[run_id]
+            if cached_seq == curr_seq:
+                return [dict(e) for e in cached_errors]
+
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            cur = conn.execute("SELECT last_seq, errors_json FROM run_materialized_cache WHERE run_id = ?", (run_id,))
+            row = cur.fetchone()
+            if row and row["last_seq"] == curr_seq and row["errors_json"]:
+                errors = json.loads(row["errors_json"])
+                with _MATERIALIZED_CACHE_LOCK:
+                    _ERRORS_CACHE[run_id] = (curr_seq, errors)
+                return [dict(e) for e in errors]
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    errors = _compute_run_errors(run_id)
+    with _MATERIALIZED_CACHE_LOCK:
+        _ERRORS_CACHE[run_id] = (curr_seq, errors)
+    _persist_materialized_cache(run_id, curr_seq, errors=errors)
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Storage Retention and Rotation Policy
+# ---------------------------------------------------------------------------
+def rotate_and_prune_storage(
+    max_runs: int = 50,
+    max_age_days: int = 30,
+    runs_dir: str = BASE_RUNS_DIR,
+    logs_dir: str = LOG_DIR,
+    artifacts_dir: str = "artifacts",
+) -> Dict[str, Any]:
+    """
+    Retention and rotation policy for runs, logs, artifacts, and SQLite index entries.
+    Keeps at most `max_runs` recent runs and deletes records/files older than `max_age_days`.
+    """
+    import shutil
+    cutoff_ts = time.time() - (max_age_days * 86400)
+    pruned_runs = []
+    pruned_logs = []
+    pruned_artifacts = []
+
+    # 1. Identify run directories in runs_dir
+    run_entries = []
+    if os.path.exists(runs_dir):
+        for entry in os.listdir(runs_dir):
+            full_p = os.path.join(runs_dir, entry)
+            if os.path.isdir(full_p):
+                mtime = os.path.getmtime(full_p)
+                run_entries.append((entry, full_p, mtime))
+
+    run_entries.sort(key=lambda x: x[2], reverse=True)
+
+    runs_to_remove = set()
+    for idx, (r_id, path, mtime) in enumerate(run_entries):
+        if idx >= max_runs or mtime < cutoff_ts:
+            runs_to_remove.add(r_id)
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+                pruned_runs.append(r_id)
+            except Exception as e:
+                logger.warning("Could not delete run dir %s: %s", path, e)
+
+    # 2. Prune log files in logs_dir
+    if os.path.exists(logs_dir):
+        for fname in os.listdir(logs_dir):
+            full_p = os.path.join(logs_dir, fname)
+            if os.path.isfile(full_p):
+                mtime = os.path.getmtime(full_p)
+                matched_run = next((r for r in runs_to_remove if fname.startswith(r)), None)
+                if matched_run or mtime < cutoff_ts:
+                    try:
+                        os.remove(full_p)
+                        pruned_logs.append(fname)
+                    except Exception as e:
+                        logger.warning("Could not delete log file %s: %s", full_p, e)
+
+    # 3. Prune artifacts
+    if os.path.exists(artifacts_dir):
+        for root, dirs, files in os.walk(artifacts_dir):
+            for f in files:
+                full_p = os.path.join(root, f)
+                mtime = os.path.getmtime(full_p)
+                matched_run = next((r for r in runs_to_remove if r in f or r in root), None)
+                if matched_run or mtime < cutoff_ts:
+                    try:
+                        os.remove(full_p)
+                        pruned_artifacts.append(os.path.relpath(full_p, artifacts_dir))
+                    except Exception as e:
+                        logger.warning("Could not delete artifact %s: %s", full_p, e)
+
+    # 4. Prune SQLite tables
+    if runs_to_remove:
+        with _DB_LOCK:
+            conn = _get_db()
+            try:
+                with conn:
+                    placeholders = ",".join(["?"] * len(runs_to_remove))
+                    r_list = list(runs_to_remove)
+                    conn.execute(f"DELETE FROM events WHERE run_id IN ({placeholders})", r_list)
+                    conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", r_list)
+                    conn.execute(f"DELETE FROM run_materialized_cache WHERE run_id IN ({placeholders})", r_list)
+                    conn.execute(f"DELETE FROM adaptive_ideas WHERE run_id IN ({placeholders})", r_list)
+                    conn.execute(f"DELETE FROM adaptive_errors WHERE run_id IN ({placeholders})", r_list)
+                    conn.execute(f"DELETE FROM adaptive_runs WHERE run_id IN ({placeholders})", r_list)
+            except Exception as exc:
+                logger.warning("Error pruning SQLite records for removed runs: %s", exc)
+            finally:
+                conn.close()
+
+    with _MATERIALIZED_CACHE_LOCK:
+        for r_id in runs_to_remove:
+            _ATTEMPTS_CACHE.pop(r_id, None)
+            _ERRORS_CACHE.pop(r_id, None)
+
+    return {
+        "pruned_run_ids": pruned_runs,
+        "pruned_log_files": pruned_logs,
+        "pruned_artifact_files": pruned_artifacts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -794,3 +1232,170 @@ def export_run_bundle(run_id: str, zip_path: Optional[str] = None) -> str:
             zf.write(report_path, arcname="report.md")
 
     return zip_path
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Controller Persistence Helpers
+# ---------------------------------------------------------------------------
+def record_adaptive_idea(
+    run_id: str,
+    phase: str,
+    tier: int,
+    idea_summary: str,
+    details: Optional[Dict[str, Any]] = None,
+    outcome: str = "evaluated",
+) -> Dict[str, Any]:
+    norm_idea = idea_summary.strip().lower()
+    idea_hash = hashlib.sha256(f"{phase}:{tier}:{norm_idea}".encode("utf-8")).hexdigest()[:12]
+    now_ts = time.time()
+    details_str = json.dumps(safe_json(details or {}))
+
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            with conn:
+                cur = conn.execute("SELECT 1 FROM adaptive_ideas WHERE run_id = ? AND idea_id = ?", (run_id, idea_hash))
+                if cur.fetchone():
+                    conn.execute(
+                        """
+                        UPDATE adaptive_ideas SET phase = ?, tier = ?, summary = ?, details_json = ?, outcome = ?, ts = ?
+                        WHERE run_id = ? AND idea_id = ?
+                        """,
+                        (phase, tier, idea_summary, details_str, outcome, now_ts, run_id, idea_hash),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO adaptive_ideas (run_id, idea_id, phase, tier, summary, details_json, outcome, ts)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (run_id, idea_hash, phase, tier, idea_summary, details_str, outcome, now_ts),
+                    )
+        finally:
+            conn.close()
+
+    return {
+        "idea_id": idea_hash,
+        "phase": phase,
+        "tier": tier,
+        "summary": idea_summary,
+        "details": details or {},
+        "outcome": outcome,
+        "timestamp": now_ts,
+    }
+
+
+def clear_adaptive_run(run_id: str) -> None:
+    """Clear all adaptive controller records for a given run (useful for cleanup and test resets)."""
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            with conn:
+                conn.execute("DELETE FROM adaptive_ideas WHERE run_id = ?", (run_id,))
+                conn.execute("DELETE FROM adaptive_errors WHERE run_id = ?", (run_id,))
+                conn.execute("DELETE FROM adaptive_runs WHERE run_id = ?", (run_id,))
+        finally:
+            conn.close()
+
+
+def get_adaptive_ideas(run_id: str, phase: Optional[str] = None) -> List[Dict[str, Any]]:
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            if phase:
+                cur = conn.execute(
+                    "SELECT idea_id, phase, tier, summary, details_json, outcome, ts FROM adaptive_ideas WHERE run_id = ? AND phase = ? ORDER BY ts ASC",
+                    (run_id, phase),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT idea_id, phase, tier, summary, details_json, outcome, ts FROM adaptive_ideas WHERE run_id = ? ORDER BY ts ASC",
+                    (run_id,),
+                )
+            rows = cur.fetchall()
+            results = []
+            for r in rows:
+                try:
+                    det = json.loads(r["details_json"]) if r["details_json"] else {}
+                except Exception:
+                    det = {}
+                results.append({
+                    "idea_id": r["idea_id"],
+                    "phase": r["phase"],
+                    "tier": r["tier"],
+                    "summary": r["summary"],
+                    "details": det,
+                    "outcome": r["outcome"],
+                    "timestamp": r["ts"],
+                })
+            return results
+        finally:
+            conn.close()
+
+
+def record_adaptive_error(run_id: str, sig: str, error_type: str = "ExecutionError") -> None:
+    now_ts = time.time()
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO adaptive_errors (run_id, sig, error_type, ts) VALUES (?, ?, ?, ?)",
+                    (run_id, sig, error_type, now_ts),
+                )
+        finally:
+            conn.close()
+
+
+def get_adaptive_error_signatures(run_id: str) -> List[str]:
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            cur = conn.execute("SELECT sig FROM adaptive_errors WHERE run_id = ? ORDER BY id ASC", (run_id,))
+            return [row["sig"] for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+
+def set_adaptive_run_start(run_id: str, start_time: Optional[float] = None) -> None:
+    st = start_time if start_time is not None else time.time()
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            with conn:
+                conn.execute("INSERT OR REPLACE INTO adaptive_runs (run_id, start_time) VALUES (?, ?)", (run_id, st))
+        finally:
+            conn.close()
+
+
+def get_adaptive_run_start(run_id: str) -> Optional[float]:
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            cur = conn.execute("SELECT start_time FROM adaptive_runs WHERE run_id = ?", (run_id,))
+            row = cur.fetchone()
+            return row["start_time"] if row else None
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# CLI Administration Interface
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Tracer administration & storage maintenance CLI")
+    parser.add_argument("--prune", action="store_true", help="Execute retention policy: rotate and prune storage")
+    parser.add_argument("--max-runs", type=int, default=50, help="Maximum number of runs to retain (default: 50)")
+    parser.add_argument("--max-age-days", type=int, default=30, help="Maximum age of runs in days (default: 30)")
+    args = parser.parse_args()
+
+    if args.prune:
+        result = rotate_and_prune_storage(max_runs=args.max_runs, max_age_days=args.max_age_days)
+        print(f"Prune completed successfully:")
+        print(f"  Pruned run directories: {len(result['pruned_run_ids'])}")
+        print(f"  Pruned log files:       {len(result['pruned_log_files'])}")
+        print(f"  Pruned artifacts:       {len(result['pruned_artifact_files'])}")
+    else:
+        parser.print_help()
+

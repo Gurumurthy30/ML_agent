@@ -94,25 +94,10 @@ def _events_path(run_id: str) -> str:
     return os.path.join(LOG_DIR, f"{run_id}.events.jsonl")
 
 
-def log_event(run_id: str, agent: str, event_type: str, **payload) -> None:
-    """Append one structured, machine-readable event to this run's trace."""
-    try:
-        from tools.tracer import record_event
-        record_event(run_id=run_id, agent=agent, event_type=event_type, **payload)
-    except Exception as exc:
-        # Fallback to direct jsonl writing if tracer encounters an issue
-        record = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "run_id": run_id,
-            "agent": agent,
-            "event": event_type,
-            **payload,
-        }
-        from utils.safe import safe_json
-        clean_record = safe_json(record)
-        with open(_events_path(run_id), "a", encoding="utf-8") as f:
-            f.write(json.dumps(clean_record) + "\n")
-        publish_to_subscribers(run_id, clean_record)
+def log_event(run_id: str, agent: str, event_type: str, **payload) -> dict:
+    """Append one structured, machine-readable event to this run's trace via the canonical tracer."""
+    from tools.tracer import record_event
+    clean_record = record_event(run_id=run_id, agent=agent, event_type=event_type, **payload)
 
     # Mirror a short human-readable line into the normal logger too (trimmed so a
     # big payload like full_history doesn't spam the console/log file).
@@ -121,11 +106,20 @@ def log_event(run_id: str, agent: str, event_type: str, **payload) -> None:
     get_logger(run_id).debug(
         "[%s] %s | %s", agent, event_type, json.dumps(safe_json(preview))[:500]
     )
+    return clean_record
 
 
 def read_events(run_id: str) -> list:
-    """Read back the full structured event trace for a run. Used by the Reporter
-    agent to build its monitoring summary. Returns [] if nothing was logged yet."""
+    """Read back the full structured event trace for a run.
+    Uses tracer's get_run_events with fallback to direct jsonl file reading."""
+    try:
+        from tools.tracer import get_run_events
+        evs = get_run_events(run_id)
+        if evs:
+            return evs
+    except Exception:
+        pass
+
     path = _events_path(run_id)
     if not os.path.exists(path):
         return []

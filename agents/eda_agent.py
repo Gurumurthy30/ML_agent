@@ -19,7 +19,6 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from state import AgentState
 from agents.coder_agent import coder_agent
 from agents.loop_utils import compute_iteration_ceiling, compute_exec_timeout, run_exploration_loop
-from memory.run_memory import lookup_run_memory
 from tools.logger import get_logger, log_event, step_timer
 from tools.streaming import stream_text
 
@@ -57,11 +56,8 @@ def eda_agent(state: AgentState) -> dict:
     exec_timeout = compute_exec_timeout(profile)
     log_event(run_id, "eda_agent", "loop_start", ceiling=ceiling, exec_timeout=exec_timeout)
 
-    memory_query = (f"EDA for a {state.get('task_type', 'unknown')} task, "
-                    f"modalities: {profile.get('detected_modalities')}, "
-                    f"metric: {profile.get('recommended_metric')}")
-    prior_memory = lookup_run_memory(state["dataset_fingerprint"], memory_query, run_id=run_id,
-                                     calling_agent="eda_agent")
+    private_eda = (state.get("private_memories") or {}).get("eda", [])
+    coder_records = []
 
     def decide_next_step(condensed_history):
         context = {
@@ -69,7 +65,7 @@ def eda_agent(state: AgentState) -> dict:
             "target_column": state.get("target_column"),
             "task_type": state.get("task_type"),
             "prior_analyses_this_run": condensed_history,
-            "similar_past_runs": prior_memory,
+            "private_eda_history": private_eda,
         }
         system_prompt = """You are the EDA agent in a multi-agent ML pipeline. You decide
 what exploratory analysis to run next on the raw dataset. Each analysis is independent —
@@ -119,7 +115,10 @@ CRITICAL RULES:
                 context={"profile": profile, "target_column": state.get("target_column")},
                 run_id=run_id, timeout=exec_timeout,
                 parent_agent="eda_agent", parent_iteration=iteration,
+                private_memory=state.get("private_memories"),
             )
+        if result.get("private_memory_entry"):
+            coder_records.append(result["private_memory_entry"])
         stdout_preview = (result["stdout"] or "").strip().splitlines()
         headline = stdout_preview[0][:160] if stdout_preview else ("failed" if not result["success"] else "no output")
         condensed = f"iter {iteration}: {decision.task_spec[:100]} -> {headline}"
@@ -160,10 +159,22 @@ CRITICAL RULES:
 
     update = {
         "eda_findings": eda_findings,
+        "private_memories": {
+            "eda": [{
+                "analyses": loop_result["condensed_history"],
+                "exit_reason": loop_result["exit_reason"],
+                "iterations": loop_result["iterations"],
+            }],
+            "coder": coder_records,
+        },
+        "open_summary_memory": {
+            "eda": f"Completed {loop_result['iterations']} analyses ({loop_result['exit_reason']}). {narrative[:350]}"
+        },
         "run_memory": [f"[EDA] {c}" for c in loop_result["condensed_history"]],
         "iteration": state.get("iteration", 0) + loop_result["iterations"],
+        "last_executed_agent": "eda_agent",
     }
-    if loop_result["exit_reason"] != "llm_stop":
+    if loop_result["exit_reason"] not in ("llm_stop", "user_stopped"):
         update["requires_human_approval"] = True
         update["approval_reason"] = "unresolved_exploration"
 

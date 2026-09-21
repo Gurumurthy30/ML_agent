@@ -80,13 +80,25 @@ def run_exploration_loop(
         going" backstop. EDA/Features never get one (spec-confirmed, do not add it).
 
     Returns {"full_history", "condensed_history", "exit_reason", "iterations"} where
-    exit_reason is one of "llm_stop", "hard_block", "plateau", "ceiling".
+    exit_reason is one of "llm_stop", "hard_block", "plateau", "ceiling", "user_stopped".
     """
     condensed_history = []
     full_history = []
     exit_reason = "ceiling"
 
     for iteration in range(1, ceiling + 1):
+        from tools.tracer import get_run_control
+        ctrl = get_run_control(run_id)
+        ctrl.wait_if_paused()
+        if ctrl.stopped:
+            exit_reason = "user_stopped"
+            break
+        if ctrl.consume_escape():
+            log_event(run_id, agent_name, "user_escape_consumed",
+                      level="exploration_loop", iteration=iteration)
+            exit_reason = "user_escape"
+            break
+
         decision = decide_next_step(condensed_history)
         log_event(run_id, agent_name, "loop_decision", iteration=iteration,
                   decision=decision.decision, reasoning=decision.reasoning,

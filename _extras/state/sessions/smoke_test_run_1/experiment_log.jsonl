@@ -1,5 +1,0 @@
-{"experiment_id": "exp_001", "approach_summary": "[DRY-RUN] LightGBM baseline.", "model_type": "LightGBM", "cv_mean": 0.82, "cv_std": 0.0031, "submission_score": 0.82, "status": "success", "timestamp": "2026-09-11T13:20:08Z"}
-{"experiment_id": "exp_001", "approach_summary": "[DRY-RUN] LightGBM baseline.", "model_type": "LightGBM", "cv_mean": 0.82, "cv_std": 0.0056, "submission_score": 0.82, "status": "success", "timestamp": "2026-09-11T13:20:08Z"}
-{"experiment_id": "exp_001", "approach_summary": "[DRY-RUN] LightGBM baseline.", "model_type": "LightGBM", "cv_mean": 0.82, "cv_std": 0.0042, "submission_score": 0.82, "status": "success", "timestamp": "2026-09-11T13:20:09Z"}
-{"experiment_id": "exp_001", "approach_summary": "[DRY-RUN] LightGBM baseline.", "model_type": "LightGBM", "cv_mean": 0.82, "cv_std": 0.0032, "submission_score": 0.82, "status": "success", "timestamp": "2026-09-11T13:20:09Z"}
-{"experiment_id": "exp_001", "approach_summary": "[DRY-RUN] LightGBM baseline.", "model_type": "LightGBM", "cv_mean": 0.82, "cv_std": 0.0036, "submission_score": 0.82, "status": "success", "timestamp": "2026-09-11T13:20:09Z"}

@@ -87,11 +87,17 @@ memory/store/*.jsonl
 # Personal review notes
 review/
 
-# Node.js
+# Node.js & Frontend
 node_modules/
+frontend/dist/
+frontend/node_modules/
+*.tsbuildinfo
+.oxlintcache
 
 # Notebook
 Notebook/
 
 # Runs
 runs/*
+checkpoints.db*
+runs_index.db*

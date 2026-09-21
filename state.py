@@ -14,10 +14,10 @@ import hashlib
 import operator
 import os
 import uuid
-from typing import Literal, Optional
+from typing import Literal, Optional, Annotated
 from typing_extensions import TypedDict
-from typing import Annotated
 from langgraph.graph.message import add_messages
+from utils.scoped_memory import merge_private_memories, merge_open_summary
 
 
 def _fingerprint(path: str) -> str:
@@ -76,6 +76,15 @@ class AgentState(TypedDict):
     feature_plan: Optional[dict]   # persists {code, description, destructive_self_assessment}
                                     # across the human-approval interrupt/resume cycle
 
+    # --- Scoped Memory System ---
+    # Profiler has NO memory (simple, one-time execution).
+    # Private / Score memory for specialist working agents (coder, eda, features, modeler).
+    # Modeler tracks past models, hyperparams, CV scores, and mistakes/blunders to avoid repeats.
+    private_memories: Annotated[dict, merge_private_memories]
+    # Open summarization memory for executive agents (supervisor, judge, reporter).
+    # Token-bounded digest preventing context leaks.
+    open_summary_memory: Annotated[dict, merge_open_summary]
+
     # --- Tool-calling trace ---
     messages: Annotated[list, add_messages]
 
@@ -127,6 +136,8 @@ def build_initial_state(
         "approval_reason": None,
         "approval_status": None,
         "feature_plan": None,
+        "private_memories": {"coder": [], "eda": [], "features": [], "modeler": []},
+        "open_summary_memory": {},
         "messages": [],
         "report": "",
         "artifact_path": "",

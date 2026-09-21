@@ -16,8 +16,10 @@ from agents.adaptive_controller import (
     SafetyEnvelope,
     AdaptiveStoppingPolicy,
 )
+from tools.tracer import clear_adaptive_run
 
 def test_tried_ideas_registry():
+    clear_adaptive_run("test_run_1")
     reg = TriedIdeasRegistry()
     run_id = "test_run_1"
 
@@ -42,6 +44,7 @@ def test_tried_ideas_registry():
 
 
 def test_error_signature_deduplicator():
+    clear_adaptive_run("test_run_err")
     dedup = ErrorSignatureDeduplicator()
     run_id = "test_run_err"
 

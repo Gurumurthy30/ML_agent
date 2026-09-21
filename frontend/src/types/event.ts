@@ -1,0 +1,48 @@
+export interface PipelineEvent {
+  event_id?: string;
+  run_id: string;
+  seq: number;
+  ts: string;
+  agent: string;
+  event_type?: string;
+  type?: string;
+  event?: string;
+  phase?: string;
+  tier?: number;
+  attempt?: number;
+  iteration?: number;
+  intent?: string;
+  decision?: string;
+  reason?: string;
+  metric_value?: number;
+  cv_score?: number;
+  metric_delta?: number;
+  duration_ms?: number;
+  tokens_in?: number;
+  tokens_out?: number;
+  cost_usd?: number;
+  error_signature?: string;
+  error?: string;
+  stderr?: string;
+  error_trace?: string;
+  code?: string;
+  code_diff?: string;
+  parent_agent?: string;
+  parent_iteration?: number;
+  level?: string;
+  feature_plan?: {
+    code?: string;
+    description?: string;
+    proposed_output_path?: string;
+    structural_diff?: {
+      dropped_columns?: string[];
+      added_columns?: string[];
+      row_count_delta?: number;
+      null_count_delta?: number;
+      [key: string]: any;
+    };
+    [key: string]: any;
+  };
+  state_snapshot?: Record<string, any>;
+  [key: string]: any;
+}

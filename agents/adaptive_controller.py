@@ -20,7 +20,16 @@ import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from utils.safe import to_float, safe_diff, safe_round, safe_json
-from tools.tracer import compute_error_signature, record_event
+from tools.tracer import (
+    compute_error_signature,
+    record_event,
+    record_adaptive_idea,
+    get_adaptive_ideas,
+    record_adaptive_error,
+    get_adaptive_error_signatures,
+    set_adaptive_run_start,
+    get_adaptive_run_start,
+)
 
 logger = logging.getLogger("agents.adaptive_controller")
 
@@ -40,8 +49,8 @@ DEFAULT_NOISE_BAND_EPSILON = float(os.environ.get("PLATEAU_NOISE_EPSILON", "0.00
 # ---------------------------------------------------------------------------
 class TriedIdeasRegistry:
     """
-    In-memory registry of all hypotheses, model architectures, and feature engineering
-    ideas tested during a run. Prevents duplicate cycles.
+    SQLite-backed registry of all hypotheses, model architectures, and feature engineering
+    ideas tested during a run. Persisted in runs_index.db to guarantee multi-worker consistency.
     """
     def __init__(self):
         self._runs: Dict[str, List[Dict[str, Any]]] = {}
@@ -54,59 +63,55 @@ class TriedIdeasRegistry:
         idea_summary: str,
         details: Optional[Dict[str, Any]] = None,
         outcome: str = "evaluated",
-    ):
+    ) -> Dict[str, Any]:
+        entry = record_adaptive_idea(
+            run_id=run_id,
+            phase=phase,
+            tier=tier,
+            idea_summary=idea_summary,
+            details=details,
+            outcome=outcome,
+        )
         if run_id not in self._runs:
             self._runs[run_id] = []
-
-        norm_idea = idea_summary.strip().lower()
-        idea_hash = hashlib.sha256(f"{phase}:{tier}:{norm_idea}".encode("utf-8")).hexdigest()[:12]
-
-        entry = {
-            "idea_id": idea_hash,
-            "phase": phase,
-            "tier": tier,
-            "summary": idea_summary,
-            "details": details or {},
-            "outcome": outcome,
-            "timestamp": time.time(),
-        }
         self._runs[run_id].append(entry)
         return entry
 
     def is_tried(self, run_id: str, phase: str, idea_summary: str) -> Tuple[bool, Optional[str]]:
         """Check if an idea or semantically identical approach has already been tested."""
-        if run_id not in self._runs:
+        items = get_adaptive_ideas(run_id, phase=phase)
+        if not items:
+            items = [it for it in self._runs.get(run_id, []) if it["phase"] == phase]
+        if not items:
             return False, None
 
         norm_idea = idea_summary.strip().lower()
-        for item in self._runs[run_id]:
-            if item["phase"] == phase:
-                existing_norm = item["summary"].strip().lower()
-                # Exact or high substring overlap check
-                if norm_idea == existing_norm or (len(norm_idea) > 20 and norm_idea in existing_norm):
-                    reason = f"Identical idea already tested at tier {item['tier']} with outcome: {item['outcome']}"
-                    try:
-                        from tools.tracer import record_event
-                        record_event(
-                            run_id, "adaptive_controller", "duplicate_idea_rejected",
-                            phase=phase,
-                            reason=reason,
-                            idea=idea_summary[:200],
-                            matched_outcome=item["outcome"],
-                            matched_tier=item["tier"],
-                        )
-                    except Exception:
-                        pass
-                    return True, reason
+        for item in items:
+            existing_norm = item["summary"].strip().lower()
+            # Exact or high substring overlap check
+            if norm_idea == existing_norm or (len(norm_idea) > 20 and norm_idea in existing_norm):
+                reason = f"Identical idea already tested at tier {item['tier']} with outcome: {item['outcome']}"
+                try:
+                    record_event(
+                        run_id, "adaptive_controller", "duplicate_idea_rejected",
+                        phase=phase,
+                        reason=reason,
+                        idea=idea_summary[:200],
+                        matched_outcome=item["outcome"],
+                        matched_tier=item["tier"],
+                    )
+                except Exception:
+                    pass
+                return True, reason
 
         return False, None
 
     def get_tried_summaries(self, run_id: str, phase: Optional[str] = None) -> List[str]:
-        if run_id not in self._runs:
-            return []
-        items = self._runs[run_id]
-        if phase:
-            items = [it for it in items if it["phase"] == phase]
+        items = get_adaptive_ideas(run_id, phase=phase)
+        if not items and run_id in self._runs:
+            items = self._runs[run_id]
+            if phase:
+                items = [it for it in items if it["phase"] == phase]
         return [it["summary"] for it in items]
 
 
@@ -115,8 +120,8 @@ class TriedIdeasRegistry:
 # ---------------------------------------------------------------------------
 class ErrorSignatureDeduplicator:
     """
-    Tracks error signatures across attempts. Detects when the model or coder
-    is stuck in an error loop (same error 2+ times consecutively).
+    Tracks error signatures across attempts. Persisted in SQLite to guarantee
+    multi-process worker detection when the model or coder is stuck in an error loop.
     """
     def __init__(self):
         self._run_errors: Dict[str, List[str]] = {}
@@ -126,17 +131,24 @@ class ErrorSignatureDeduplicator:
         Records an error and returns (signature, is_consecutive_repeat).
         """
         sig = compute_error_signature(error_type, error_message)
+        existing = get_adaptive_error_signatures(run_id)
+        if not existing and run_id in self._run_errors:
+            existing = self._run_errors[run_id]
+
+        is_repeat = (len(existing) > 0 and existing[-1] == sig)
+        record_adaptive_error(run_id, sig, error_type=error_type)
+
         if run_id not in self._run_errors:
             self._run_errors[run_id] = []
+        self._run_errors[run_id].append(sig)
 
-        history = self._run_errors[run_id]
-        is_repeat = (len(history) > 0 and history[-1] == sig)
-        history.append(sig)
         return sig, is_repeat
 
     def should_force_escalate(self, run_id: str, max_consecutive: int = 2) -> bool:
         """True if the last `max_consecutive` errors have identical signature."""
-        history = self._run_errors.get(run_id, [])
+        history = get_adaptive_error_signatures(run_id)
+        if not history:
+            history = self._run_errors.get(run_id, [])
         if len(history) < max_consecutive:
             return False
         tail = history[-max_consecutive:]
@@ -215,7 +227,9 @@ class SafetyEnvelope:
         self._start_times: Dict[str, float] = {}
 
     def start_run(self, run_id: str):
-        self._start_times[run_id] = time.time()
+        now_ts = time.time()
+        self._start_times[run_id] = now_ts
+        set_adaptive_run_start(run_id, now_ts)
 
     def check_envelope(
         self,
@@ -227,7 +241,7 @@ class SafetyEnvelope:
         """
         Check current resource consumption against envelope boundaries.
         """
-        start = self._start_times.get(run_id, time.time())
+        start = get_adaptive_run_start(run_id) or self._start_times.get(run_id, time.time())
         elapsed_s = time.time() - start
 
         # 1. Hard limits check (100% threshold)
@@ -301,35 +315,45 @@ class AdaptiveStoppingPolicy:
             return {
                 "action": "wind_down",
                 "next_agent": "reporter",
-                "stop_reason": "safety_envelope_exhausted",
+                "stop_reason": "hit_safety_ceiling",
                 "reason": env_msg,
             }
 
         # 2. Check Consecutive Error Loop
         if self.error_dedup.should_force_escalate(run_id):
+            decision = "escalate" if proposed_tier < 2 else "wind_down"
             record_event(
                 run_id=run_id,
                 agent="adaptive_controller",
                 event_type="error_loop_detected",
                 reason="Consecutive identical error signatures detected",
-                decision="escalate",
+                decision=decision,
             )
-            return {
-                "action": "escalate",
-                "next_agent": "features" if proposed_tier == 1 else "reporter",
-                "tier": proposed_tier + 1,
-                "reason": "Repeated identical error signature detected; mutating pipeline approach.",
-            }
+            if proposed_tier < 2:
+                return {
+                    "action": "escalate",
+                    "next_agent": "features",
+                    "tier": 2,
+                    "reason": "Repeated identical error signature detected; mutating pipeline approach.",
+                }
+            else:
+                return {
+                    "action": "wind_down",
+                    "next_agent": "reporter",
+                    "stop_reason": "converged",
+                    "reason": "Repeated identical error signature detected; retries capped at tier 2, winding down.",
+                }
 
         # 3. Check Metric Plateau
         is_plateau, plateau_msg = self.plateau_detector.check_plateau(metric_history)
         if is_plateau:
+            decision = "escalate" if proposed_tier < 2 else "wind_down"
             record_event(
                 run_id=run_id,
                 agent="adaptive_controller",
                 event_type="plateau_detected",
                 reason=plateau_msg,
-                decision="escalate" if proposed_tier < 3 else "wind_down",
+                decision=decision,
             )
             if proposed_tier == 1:
                 return {
@@ -338,19 +362,12 @@ class AdaptiveStoppingPolicy:
                     "tier": 2,
                     "reason": f"{plateau_msg}. Advancing from Tier 1 (Baseline Models) to Tier 2 (Feature Engineering).",
                 }
-            elif proposed_tier == 2:
-                return {
-                    "action": "escalate",
-                    "next_agent": "modeler",
-                    "tier": 3,
-                    "reason": f"{plateau_msg}. Advancing from Tier 2 to Tier 3 (Hyperparameter Optimization & Ensembling).",
-                }
             else:
                 return {
                     "action": "wind_down",
                     "next_agent": "reporter",
                     "stop_reason": "converged",
-                    "reason": f"{plateau_msg}. All optimization tiers completed.",
+                    "reason": f"{plateau_msg}. Plateau reached; automated retries capped at tier 2, winding down.",
                 }
 
         # 4. Safe to continue with model-driven guidance

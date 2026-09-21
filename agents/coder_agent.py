@@ -97,6 +97,7 @@ def coder_agent(
     timeout: int = 60,
     parent_agent: str = None,
     parent_iteration: int = None,
+    private_memory: dict = None,
 ) -> dict:
     """
     task_spec: short natural-language description of what code should accomplish
@@ -114,13 +115,18 @@ def coder_agent(
                Coder sub-cards inside the parent agent's turn card.
     parent_iteration: iteration number within the parent's exploration loop.
                Combined with parent_agent for precise sub-card grouping.
-    Returns: {"success": bool, "code": str, "stdout": str, "output_path": str|None, "attempts": int}
+    private_memory: optional dictionary containing Coder's private execution memory.
+    Returns: {"success": bool, "code": str, "stdout": str, "output_path": str|None, "attempts": int, "private_memory_entry": dict}
     """
     input_paths = dict(input_paths)
     if "dataset" in input_paths and "dataset_dir" not in input_paths:
         input_paths["dataset_dir"] = os.path.dirname(os.path.abspath(input_paths["dataset"])) or "."
 
     llm = _make_llm()  # Coder uses the larger model for better code generation
+
+    from utils.scoped_memory import format_coder_private_history
+    pm = private_memory or (context.get("private_memories") if isinstance(context, dict) else None)
+    memory_notes = format_coder_private_history(pm)
 
     system_prompt = f"""You are the Coder sub-agent. Write a complete, self-contained Python
 script that accomplishes the task below. Read inputs from paths given in environment variables
@@ -152,7 +158,7 @@ Rules:
 - If matplotlib is imported by any third-party dependency, ALWAYS ensure headless operation: `import matplotlib; matplotlib.use('Agg')` BEFORE importing any plotting modules.
 - Write your primary result to `os.environ["OUTPUT_PATH"]` using the matching file format (e.g. `json.dump` if `.json`, `to_csv` if `.csv`, `to_parquet` if `.parquet`).
 - Ensure parent output directories exist: `os.makedirs(os.path.dirname(os.path.abspath(os.environ["OUTPUT_PATH"])), exist_ok=True)`.
-- Print concise findings and summary lines to stdout.
+- Print concise findings and summary lines to stdout.{memory_notes}
 
 Context (profile/state relevant to this task):
 {json.dumps(context, default=str, indent=2)}
@@ -165,7 +171,33 @@ Output ONLY the Python code, no markdown fences, no commentary."""
     messages = [SystemMessage(content=system_prompt)]
     code, result = "", {"stdout": ""}
 
+    from tools.tracer import compute_error_signature
+
+    consecutive_empty = 0
+    consecutive_error_sig = 0
+    last_error_sig = None
+
     for attempt in range(1, max_attempts + 1):
+        if attempt > 1 and run_id:
+            from tools.tracer import get_run_control
+            if get_run_control(run_id).consume_escape():
+                log_event(log_key, "coder_agent", "user_escape_consumed",
+                          level="coder_retry", attempt=attempt,
+                          parent_agent=parent_agent, parent_iteration=parent_iteration)
+                return {
+                    "success": False, "code": code, "stdout": result.get("stdout", ""),
+                    "output_path": None, "attempts": attempt - 1,
+                    "exhausted_early": True,
+                    "exit_reason": "user_escape",
+                    "escaped": True,
+                    "private_memory_entry": {
+                        "task_spec": task_spec, "success": False, "code": code,
+                        "stderr": result.get("stderr", "Execution skipped via user escape."),
+                        "attempts": attempt - 1, "exhausted_early": True,
+                        "exit_reason": "user_escape",
+                    },
+                }
+
         with step_timer(log_key, "coder_agent", f"generate_attempt_{attempt}"):
             response_text = stream_text(
                 llm, messages, run_id=run_id,
@@ -173,18 +205,31 @@ Output ONLY the Python code, no markdown fences, no commentary."""
             )
         code = _strip_code_fences(response_text)
 
-        with step_timer(log_key, "coder_agent", f"execute_attempt_{attempt}"):
-            if len(code) != 0:
+        if len(code) == 0:
+            consecutive_empty += 1
+            consecutive_error_sig = 0
+            last_error_sig = None
+            result = {
+                "success": False,
+                "stdout": "",
+                "stderr": "Model returned empty code (nothing left after stripping code fences).",
+                "output_path": None,
+            }
+        else:
+            consecutive_empty = 0
+            with step_timer(log_key, "coder_agent", f"execute_attempt_{attempt}"):
                 result = _execute(code, input_paths, output_path, timeout, run_id)
-            else:
-                result = {
-                    "success": False,
-                    "stdout": "",
-                    "stderr": "Model returned empty code (nothing left after stripping code fences).",
-                    "output_path": None,
-                }
 
-        event_name = "attempt_result" if parent_agent == "modeler_agent" else "code_execution"
+            if not result["success"]:
+                err_text = result.get("stderr") or "Execution failed without stderr"
+                sig = compute_error_signature("stderr", err_text)
+                if sig == last_error_sig:
+                    consecutive_error_sig += 1
+                else:
+                    last_error_sig = sig
+                    consecutive_error_sig = 1
+
+        event_name = "coder_attempt" if parent_agent == "modeler_agent" else "code_execution"
         log_event(log_key, "coder_agent", event_name, attempt=attempt,
                   success=result["success"], code=code,
                   stdout=result.get("stdout", ""), stderr=result.get("stderr", ""),
@@ -194,15 +239,67 @@ Output ONLY the Python code, no markdown fences, no commentary."""
             return {
                 "success": True, "code": code, "stdout": result["stdout"],
                 "output_path": result["output_path"], "attempts": attempt,
+                "private_memory_entry": {
+                    "task_spec": task_spec, "success": True, "code": code, "attempts": attempt,
+                },
             }
+
+        # Early exit check 1: consecutive empty completions (>= 2)
+        if consecutive_empty >= 2:
+            log_event(log_key, "coder_agent", "coder_exhausted_early",
+                      reason="consecutive_empty_code",
+                      attempts=attempt, parent_agent=parent_agent, parent_iteration=parent_iteration)
+            return {
+                "success": False, "code": code, "stdout": result.get("stdout", ""),
+                "output_path": None, "attempts": attempt,
+                "exhausted_early": True,
+                "exit_reason": "consecutive_empty_code",
+                "private_memory_entry": {
+                    "task_spec": task_spec, "success": False, "code": code,
+                    "stderr": result.get("stderr", ""), "attempts": attempt,
+                    "exhausted_early": True,
+                    "exit_reason": "consecutive_empty_code",
+                },
+            }
+
+        # Early exit check 2: consecutive identical error signatures (>= 3)
+        if consecutive_error_sig >= 3:
+            log_event(log_key, "coder_agent", "coder_exhausted_early",
+                      reason="repeated_identical_error",
+                      error_signature=last_error_sig,
+                      attempts=attempt, parent_agent=parent_agent, parent_iteration=parent_iteration)
+            return {
+                "success": False, "code": code, "stdout": result.get("stdout", ""),
+                "output_path": None, "attempts": attempt,
+                "exhausted_early": True,
+                "exit_reason": "repeated_identical_error",
+                "private_memory_entry": {
+                    "task_spec": task_spec, "success": False, "code": code,
+                    "stderr": result.get("stderr", ""), "attempts": attempt,
+                    "exhausted_early": True,
+                    "exit_reason": "repeated_identical_error",
+                },
+            }
+
+        # Build retry instruction: on 2nd consecutive identical error, urge fundamentally different approach
+        if consecutive_error_sig == 2:
+            retry_directive = (
+                "Your last fix produced the identical error — try a fundamentally different approach. "
+                "Fix it and return the complete corrected script (no markdown fences, no commentary)."
+            )
+        else:
+            retry_directive = "Fix it and return the complete corrected script (no markdown fences, no commentary)."
 
         messages.append(AIMessage(content=response_text))
         messages.append(HumanMessage(content=(
-            f"The code failed. stderr:\n{result['stderr']}\nFix it and return the complete "
-            f"corrected script (no markdown fences, no commentary)."
+            f"The code failed. stderr:\n{result['stderr']}\n{retry_directive}"
         )))
 
     return {
         "success": False, "code": code, "stdout": result.get("stdout", ""),
         "output_path": None, "attempts": max_attempts,
+        "private_memory_entry": {
+            "task_spec": task_spec, "success": False, "code": code,
+            "stderr": result.get("stderr", ""), "attempts": max_attempts,
+        },
     }

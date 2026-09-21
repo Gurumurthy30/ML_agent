@@ -509,35 +509,42 @@ test_exec_timeout_scaling()
 
 
 # ---------------------------------------------------------------------------
-# Test 10: Run Memory / RAG — real store + lookup round trip (offline fallback embed)
+# Test 10: Scoped Memory & Open Summarization Memory System
 # ---------------------------------------------------------------------------
-import memory.run_memory as rag_mod
-
-rag_mod._STORE_DIR = "memory_store_smoke"
-os.makedirs(rag_mod._STORE_DIR, exist_ok=True)
-rag_mod._STORE_PATH = os.path.join(rag_mod._STORE_DIR, "run_memory.jsonl")
-
-
-def test_rag_round_trip():
-    check("empty store returns None", rag_mod.lookup_run_memory("fp_x", "anything") is None)
-
-    rag_mod.store_run_memory("fp_A", "run_A1", "classification task, gradient boosting won, accuracy 0.91",
-                             {"best_metric": 0.91})
-    rag_mod.store_run_memory("fp_B", "run_B1", "unrelated image classification run with a CNN",
-                             {"best_metric": 0.80})
-
-    results_same_fp = rag_mod.lookup_run_memory("fp_A", "classification task gradient boosting")
-    check("lookup returns results once store is non-empty", results_same_fp is not None)
-    check("same-fingerprint record is ranked first via the exact-match bonus",
-          results_same_fp[0]["run_id"] == "run_A1")
-
-    results_diff_fp = rag_mod.lookup_run_memory("fp_C", "gradient boosting accuracy classification")
-    check("cross-fingerprint similarity search still returns the relevant record",
-          results_diff_fp is not None and any(r["run_id"] == "run_A1" for r in results_diff_fp))
+from utils.scoped_memory import (
+    merge_private_memories,
+    merge_open_summary,
+    format_modeler_scorecard,
+    format_open_memory_digest,
+)
 
 
-test_rag_round_trip()
-shutil.rmtree("memory_store_smoke", ignore_errors=True)
+def test_scoped_memory_round_trip():
+    # 1. Test private memory isolation & reducer
+    pm_init = {"coder": [], "eda": [], "features": [], "modeler": []}
+    pm_update1 = {"modeler": [{"model_family": "RandomForest", "score": 0.82, "status": "success", "blunder_note": None}]}
+    merged1 = merge_private_memories(pm_init, pm_update1)
+    check("modeler private memory updated", len(merged1["modeler"]) == 1)
+    check("other agent memories remain empty (isolated)", len(merged1["eda"]) == 0 and len(merged1["features"]) == 0)
+
+    # 2. Test blunder logging in modeler scorecard
+    pm_update2 = {"modeler": [{"model_family": "LinearRegression", "score": None, "status": "failed", "blunder_note": "Convergence failed on unscaled features"}]}
+    merged2 = merge_private_memories(merged1, pm_update2)
+    scorecard = format_modeler_scorecard(merged2, current_best=0.82)
+    check("scorecard includes blunder warning", "Convergence failed" in scorecard and "BLUNDERS / MISTAKES TO AVOID" in scorecard)
+
+    # 3. Test open summary memory digest & size bounding
+    open_sum = {
+        "profiler": "Dataset with 100 rows x 5 cols. Target: y (classification). Metric: accuracy.",
+        "eda": "Exploration finished. No multicollinearity.",
+        "modeler": "Trained RandomForest with score 0.82.",
+    }
+    digest = format_open_memory_digest(open_sum)
+    check("open memory digest includes profiler and modeler", "[Profiler]" in digest and "[Modeler]" in digest)
+    check("digest is compact (< 2500 chars)", len(digest) < 2500)
+
+
+test_scoped_memory_round_trip()
 
 
 # ---------------------------------------------------------------------------

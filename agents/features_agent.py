@@ -26,7 +26,6 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from state import AgentState
 from agents.coder_agent import coder_agent
 from agents.loop_utils import compute_iteration_ceiling, compute_exec_timeout, run_exploration_loop
-from memory.run_memory import lookup_run_memory
 from tools.logger import get_logger, log_event, step_timer
 
 _TMP_DIR = "artifacts/features"
@@ -69,10 +68,8 @@ def features_agent(state: AgentState) -> dict:
     profile = state.get("profile", {})
     ceiling = compute_iteration_ceiling(profile)
     exec_timeout = compute_exec_timeout(profile)
-    memory_query = (f"Feature engineering for a {state.get('task_type', 'unknown')} task, "
-                    f"modalities: {profile.get('detected_modalities')}")
-    prior_memory = lookup_run_memory(state["dataset_fingerprint"], memory_query, run_id=run_id,
-                                     calling_agent="features_agent")
+    private_features = (state.get("private_memories") or {}).get("features", [])
+    coder_records = []
 
     current_path = state.get("transformed_dataset_path") or state["dataset_path"]
     is_retry = state.get("retry_tier") == 2
@@ -90,7 +87,7 @@ def features_agent(state: AgentState) -> dict:
             "target_column": state.get("target_column"),
             "task_type": state.get("task_type"),
             "steps_taken_this_run": condensed_history,
-            "similar_past_runs": prior_memory,
+            "private_features_history": private_features,
         }
         retry_note = ""
         if is_retry:
@@ -151,7 +148,10 @@ def features_agent(state: AgentState) -> dict:
                 context={"profile": profile, "target_column": state.get("target_column")},
                 run_id=run_id, timeout=exec_timeout,
                 parent_agent="features_agent", parent_iteration=iteration,
+                private_memory=state.get("private_memories"),
             )
+        if result.get("private_memory_entry"):
+            coder_records.append(result["private_memory_entry"])
 
         diff_info = {}
         structural_destructive = False
@@ -168,7 +168,7 @@ def features_agent(state: AgentState) -> dict:
 
         is_destructive = decision.destructive_self_assessment or structural_destructive
         guided = bool(state.get("guided_mode"))
-        needs_approval = result["success"] and guided
+        needs_approval = result["success"] and (guided or is_destructive)
 
         record = {
             "iteration": iteration, "task_spec": decision.task_spec, **result,
@@ -181,7 +181,7 @@ def features_agent(state: AgentState) -> dict:
 
         if needs_approval:
             hard_block_info["triggered"] = True
-            hard_block_info["reason"] = "guided_mode" if guided and not is_destructive else "destructive_action"
+            hard_block_info["reason"] = "guided_mode" if (guided and not is_destructive) else "destructive_action"
             hard_block_info["plan"] = {
                 "code": result["code"],
                 "description": decision.task_spec,
@@ -213,20 +213,32 @@ def features_agent(state: AgentState) -> dict:
     update = {
         "feature_set": feature_set,
         "transformed_dataset_path": current_path,
+        "private_memories": {
+            "features": [{
+                "steps": loop_result["condensed_history"],
+                "exit_reason": loop_result["exit_reason"],
+                "iterations": loop_result["iterations"],
+                "output_path": current_path,
+            }],
+            "coder": coder_records,
+        },
+        "open_summary_memory": {
+            "features": f"Completed {loop_result['iterations']} feature engineering steps ({loop_result['exit_reason']}). Transformed dataset: {os.path.basename(current_path)}."
+        },
         "run_memory": [f"[Features] {c}" for c in loop_result["condensed_history"]],
         "iteration": state.get("iteration", 0) + loop_result["iterations"],
         "last_executed_agent": "features",
     }
 
-    # Hard block vs. advisory — only ask permission in guided mode:
-    if bool(state.get("guided_mode")):
-        if hard_block_info["triggered"]:
-            update["requires_human_approval"] = True
-            update["approval_reason"] = hard_block_info["reason"]
-            update["feature_plan"] = hard_block_info["plan"]
-        elif loop_result["exit_reason"] != "llm_stop":
-            update["requires_human_approval"] = True
-            update["approval_reason"] = "unresolved_exploration"
+    # Hard block vs. advisory — destructive action always blocks; guided mode also blocks on unresolved exploration:
+    if hard_block_info["triggered"]:
+        update["requires_human_approval"] = True
+        update["approval_reason"] = hard_block_info["reason"]
+        update["feature_plan"] = hard_block_info["plan"]
+    elif bool(state.get("guided_mode")) and loop_result["exit_reason"] != "llm_stop":
+        update["requires_human_approval"] = True
+        update["approval_reason"] = "unresolved_exploration"
+
 
     log_event(run_id, "features_agent", "loop_end",
               **{k: v for k, v in feature_set.items() if k != "steps"})

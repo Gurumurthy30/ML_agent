@@ -22,7 +22,7 @@ from tools.llm import get_llm
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from state import AgentState
-from memory.run_memory import store_run_memory
+from utils.scoped_memory import format_open_memory_digest
 from tools.logger import get_logger, log_event, read_events, step_timer
 from tools.streaming import stream_text
 from utils.safe import safe_round
@@ -35,33 +35,51 @@ os.makedirs(_ARTIFACT_DIR, exist_ok=True)
 
 
 def _build_monitoring_summary(run_id: str) -> dict:
-    """Pure aggregation over the structured event trace — no LLM involved, so these
-    numbers are exact regardless of how well the model narrates them."""
-    events = read_events(run_id)
+    """Pure aggregation over structured tracer telemetry — no LLM involved, preserving exact counts,
+    parent-nesting, attempts, and grouped error signatures."""
+    from tools.tracer import get_run_events, get_run_attempts, get_run_errors
+    events = get_run_events(run_id)
+    attempts = get_run_attempts(run_id)
+    raw_errors = get_run_errors(run_id)
+
     per_agent_steps = Counter()
     per_agent_duration = defaultdict(float)
-    errors, decisions, hard_blocks = [], [], []
+    decisions, hard_blocks = [], []
+
+    attempts_by_parent = defaultdict(list)
+    for att in attempts:
+        p = att.get("parent_agent") or att.get("agent") or "unattributed"
+        attempts_by_parent[p].append(att)
+
+    errors_by_parent = defaultdict(list)
+    for err in raw_errors:
+        p = err.get("parent_agent") or err.get("agent") or "unattributed"
+        errors_by_parent[p].append(err)
 
     for ev in events:
         agent = ev.get("agent", "unknown")
-        etype = ev.get("event")
-        if etype == "step_end":
-            per_agent_steps[agent] += 1
-            per_agent_duration[agent] += ev.get("duration_sec", 0)
-        elif etype == "step_error":
-            errors.append({"agent": agent, "step": ev.get("step"), "error": ev.get("error")})
+        parent = ev.get("parent_agent")
+        target_bucket = f"{parent}/{agent}" if parent and parent != agent else agent
+        etype = ev.get("event") or ev.get("type")
+        if etype in ("step_end", "iteration_result", "attempt_result", "coder_attempt"):
+            per_agent_steps[target_bucket] += 1
+            dur = ev.get("duration_sec") or ((ev.get("duration_ms") or 0) / 1000.0)
+            per_agent_duration[target_bucket] += dur
         elif etype == "loop_decision":
-            decisions.append({"agent": agent, "iteration": ev.get("iteration"),
+            decisions.append({"agent": agent, "parent_agent": parent, "iteration": ev.get("iteration"),
                               "decision": ev.get("decision"), "reasoning": ev.get("reasoning")})
         elif etype == "hard_block":
-            hard_blocks.append({"agent": agent, "reason": ev.get("reason")})
+            hard_blocks.append({"agent": agent, "parent_agent": parent, "reason": ev.get("reason")})
 
     return {
         "total_events": len(events),
         "steps_per_agent": dict(per_agent_steps),
         "duration_sec_per_agent": {k: round(v, 2) for k, v in per_agent_duration.items()},
         "total_duration_sec": round(sum(per_agent_duration.values()), 2),
-        "errors": errors,
+        "attempts": attempts,
+        "attempts_by_parent": dict(attempts_by_parent),
+        "errors": raw_errors,
+        "errors_by_parent": dict(errors_by_parent),
         "hard_blocks": hard_blocks,
         "n_loop_decisions": len(decisions),
     }
@@ -77,6 +95,8 @@ def reporter_agent(state: AgentState) -> dict:
     with step_timer(run_id, "reporter_agent", "aggregate_monitoring"):
         monitoring = _build_monitoring_summary(run_id)
 
+    open_digest = format_open_memory_digest(state.get("open_summary_memory"), state=state)
+
     context = {
         "mode": state.get("mode"),
         "profile": state.get("profile"),
@@ -90,6 +110,7 @@ def reporter_agent(state: AgentState) -> dict:
         "requires_human_approval": state.get("requires_human_approval"),
         "approval_reason": state.get("approval_reason"),
         "monitoring": monitoring,
+        "pipeline_summary": open_digest,
     }
 
     system_prompt = """You are the Reporter agent, the final step of a multi-agent ML
@@ -110,6 +131,7 @@ Write in plain prose with short section headers, not a wall of JSON."""
         )
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    os.makedirs(_ARTIFACT_DIR, exist_ok=True)
     report_path = os.path.join(_ARTIFACT_DIR, f"{run_id}_{timestamp}_report.md")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_text)
@@ -125,26 +147,12 @@ Write in plain prose with short section headers, not a wall of JSON."""
     log_event(run_id, "reporter_agent", "report_written",
               report_path=report_path, metadata_path=metadata_path)
 
-    # Reporter -> Run Memory/RAG: persist a retrievable digest of this run so future
-    # EDA/Features/Modeler/Judge calls on similar datasets get a head start.
-    memory_digest = (
-        f"Task type: {state.get('task_type')}. Modalities: "
-        f"{(state.get('profile') or {}).get('detected_modalities')}. "
-        f"Metric: {(state.get('profile') or {}).get('recommended_metric')}. "
-        f"Best score: {safe_round(state.get('best_metric'), 4, default='N/A')}. "
-        f"Models tried: {[m.get('model_family') for m in (state.get('candidate_models') or [])]}. "
-        f"Feature steps: {(state.get('feature_set') or {}).get('steps')}. "
-        f"Verdict: {state.get('last_verdict')}."
-    )
-    with step_timer(run_id, "reporter_agent", "store_run_memory"):
-        store_run_memory(
-            dataset_fingerprint=state.get("dataset_fingerprint", run_id),
-            run_id=run_id, text=memory_digest,
-            metadata={"best_metric": state.get("best_metric"), "report_path": report_path},
-        )
-
     return {
         "report": report_text,
         "artifact_path": report_path,
+        "open_summary_memory": {
+            "reporter": f"Final report generated and written to {report_path}"
+        },
         "run_memory": [f"[Reporter] final report written to {report_path}"],
+        "last_executed_agent": "reporter",
     }

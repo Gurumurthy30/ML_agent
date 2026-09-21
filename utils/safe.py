@@ -157,11 +157,12 @@ def safe_json(obj: Any) -> Any:
         return None
 
     # Handle Pydantic models
-    if hasattr(obj, "model_dump") and callable(obj.model_dump):
-        try:
+    try:
+        from pydantic import BaseModel
+        if isinstance(obj, BaseModel):
             return safe_json(obj.model_dump())
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # Handle Numpy types
     if _HAS_NUMPY:

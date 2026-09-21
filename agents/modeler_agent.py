@@ -12,8 +12,9 @@ Per spec:
     Supervisor/retry machinery, exactly as the diagram's "tier 0: HP tuning (internal
     loop)" self-loop on Modeler implies.
   - Modeler is the ONLY one of the three loop agents with a mechanical stop condition:
-    auto-stop if the best metric hasn't improved over the last 5 iterations, even if
-    the LLM would keep going. This is intentionally NOT given to EDA/Features.
+    auto-stop if the best metric hasn't improved over the last config.CONVERGENCE_PATIENCE
+    iterations (defaults to 3), even if the LLM would keep going. This is intentionally NOT
+    given to EDA/Features.
   - No hardcoded MODEL_REGISTRY: the Coder sub-agent picks and evaluates model
     families itself based on task_type/recommended_metric.
 """
@@ -29,7 +30,7 @@ from state import AgentState
 from config import METRIC_IMPROVEMENT_EPSILON, CONVERGENCE_PATIENCE
 from agents.coder_agent import coder_agent
 from agents.loop_utils import compute_iteration_ceiling, compute_exec_timeout, run_exploration_loop
-from memory.run_memory import lookup_run_memory
+from utils.scoped_memory import format_modeler_scorecard
 from tools.logger import get_logger, log_event, step_timer
 from tools.streaming import invoke_structured_robust
 from utils.safe import to_float, is_better, safe_diff
@@ -77,10 +78,6 @@ def modeler_agent(state: AgentState) -> dict:
     profile = state.get("profile", {})
     ceiling = compute_iteration_ceiling(profile)
     exec_timeout = compute_exec_timeout(profile)
-    memory_query = (f"Modeling for a {state.get('task_type', 'unknown')} task, "
-                    f"modalities: {profile.get('detected_modalities')}")
-    prior_memory = lookup_run_memory(state["dataset_fingerprint"], memory_query, run_id=run_id,
-                                     calling_agent="modeler_agent")
 
     dataset_path = state.get("transformed_dataset_path") or state["dataset_path"]
     task_type = state.get("task_type") or "classification"
@@ -95,7 +92,11 @@ def modeler_agent(state: AgentState) -> dict:
     tried_families = [m.get("model_family") for m in (state.get("candidate_models") or [])]
     best_metric = state.get("best_metric")
     new_candidates, new_scores = [], []
+    private_trials = []
+    coder_records = []
     best_snapshots = {}  # iteration -> best_metric-so-far, used by the plateau backstop
+
+    scorecard_text = format_modeler_scorecard(state.get("private_memories"), current_best=best_metric)
 
     log_event(run_id, "modeler_agent", "loop_start", ceiling=ceiling, retry_tier_1=is_retry,
               rejected_family=rejected_family, metric=metric_name, higher_is_better=higher_is_better,
@@ -110,7 +111,7 @@ def modeler_agent(state: AgentState) -> dict:
             "already_tried_this_run": condensed_history,
             "already_tried_overall": tried_families,
             "avoid_family": rejected_family,
-            "similar_past_runs": prior_memory,
+            "private_scorecard_and_blunders": scorecard_text,
         }
         retry_note = ""
         if is_retry:
@@ -133,6 +134,8 @@ def modeler_agent(state: AgentState) -> dict:
                          "script MUST print a line of the exact form RESULT_JSON: "
                          "{\"model_family\": <name>, \"cv_score\": <float>, \"metric\": <name>} "
                          "before finishing. "
+                         "CRITICAL BLUNDER PREVENTION: Review your private scorecard and recorded mistakes above. "
+                         "DO NOT repeat failed hyperparameter choices, crashing architectures, or blunders from prior trials. "
                          "STOP once you have tried 3+ model families and have a model you're "
                          "confident recommending — do not explore indefinitely. "
                          "Never reuse a family; if all reasonable families are tried, stop. "
@@ -173,7 +176,10 @@ def modeler_agent(state: AgentState) -> dict:
                         "task_type": state.get("task_type"), "metric": metric_name},
                 run_id=run_id, timeout=exec_timeout,
                 parent_agent="modeler_agent", parent_iteration=iteration,
+                private_memory=state.get("private_memories"),
             )
+        if result.get("private_memory_entry"):
+            coder_records.append(result["private_memory_entry"])
 
         parsed = _parse_result_line(result["stdout"]) if result["success"] else None
         record = {"iteration": iteration, "task_spec": decision.task_spec, **result,
@@ -181,6 +187,16 @@ def modeler_agent(state: AgentState) -> dict:
 
         if not result["success"] or not parsed or "cv_score" not in parsed:
             best_snapshots[iteration] = best_metric
+            err_msg = result.get("stderr") or "Script failed or returned no RESULT_JSON line"
+            private_trials.append({
+                "model_family": decision.task_spec[:40] if decision.task_spec else "unknown",
+                "metric_name": metric_name,
+                "score": None,
+                "metric_delta": None,
+                "status": "failed",
+                "blunder_note": f"Execution crashed: {err_msg[:120]}",
+                "iteration": iteration,
+            })
             condensed = f"iter {iteration}: {decision.task_spec[:80]} -> failed/no parsable score"
             return {
                 "condensed": condensed, "record": record,
@@ -196,6 +212,15 @@ def modeler_agent(state: AgentState) -> dict:
             log_event(run_id, "modeler_agent", "metric_unavailable",
                       iteration=iteration, family=family,
                       reason="No parseable finite cv_score found in Coder output")
+            private_trials.append({
+                "model_family": family,
+                "metric_name": metric_name,
+                "score": None,
+                "metric_delta": None,
+                "status": "failed",
+                "blunder_note": "Metric returned was NaN or non-finite",
+                "iteration": iteration,
+            })
             condensed = f"iter {iteration}: {family} -> metric unavailable / execution failed"
             return {
                 "condensed": condensed, "record": record,
@@ -215,6 +240,20 @@ def modeler_agent(state: AgentState) -> dict:
             delta = 0.0
             is_improvement = True
             is_stall = False
+
+        blunder_note = None
+        if prev_score_float is not None and not is_improvement:
+            blunder_note = f"Score degraded or stalled ({delta:+.4f} vs prior {prev_score_float:.4f}). Avoid this architecture or parameter configuration."
+
+        private_trials.append({
+            "model_family": family,
+            "metric_name": parsed.get("metric", metric_name),
+            "score": score,
+            "metric_delta": delta,
+            "status": "success" if is_improvement else "stalled",
+            "blunder_note": blunder_note,
+            "iteration": iteration,
+        })
 
         new_candidates.append({
             "model_family": family, "cv_score": score,
@@ -279,6 +318,13 @@ def modeler_agent(state: AgentState) -> dict:
         "candidate_models": new_candidates,   # operator.add reducer accumulates
         "metric_history": new_scores,          # operator.add reducer accumulates
         "best_metric": best_metric,            # plain overwrite; compare-and-replace already done above
+        "private_memories": {
+            "modeler": private_trials,
+            "coder": coder_records,
+        },
+        "open_summary_memory": {
+            "modeler": f"Trained {len(new_candidates)} candidate models across families {list({c['model_family'] for c in new_candidates})}. Best {metric_name}: {best_metric if best_metric is not None else 'N/A'}. Exit: {loop_result['exit_reason']}."
+        },
         "run_memory": [f"[Modeler] {c}" for c in loop_result["condensed_history"]],
         "iteration": state.get("iteration", 0) + loop_result["iterations"],
         "last_executed_agent": "modeler",
@@ -286,7 +332,7 @@ def modeler_agent(state: AgentState) -> dict:
 
     # Both "ceiling" and "plateau" mean the LLM didn't call it converged on its own ->
     # advisory only, never blocks (best-so-far model is already recorded above).
-    if loop_result["exit_reason"] != "llm_stop":
+    if loop_result["exit_reason"] not in ("llm_stop", "user_stopped"):
         update["requires_human_approval"] = True
         update["approval_reason"] = "unresolved_exploration"
 

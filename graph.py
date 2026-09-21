@@ -7,9 +7,14 @@ reasoning, which stays out of scope (that's a human decision, not an LLM one).
 Building it this way is what actually makes Features' "hard block, genuinely pauses"
 requirement real rather than just a flag nobody acts on.
 """
+import os
+import sqlite3
+import threading
+from typing import Optional
 from langgraph.graph import StateGraph, END
 from langgraph.types import interrupt
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from state import AgentState
 from agents.supervisor import graph_node_supervisor
@@ -21,8 +26,25 @@ from agents.judge_agent import judge_agent
 from agents.reporter_agent import reporter_agent
 from tools.logger import log_event
 
+DEFAULT_CHECKPOINTS_PATH = os.path.join(os.environ.get("PIPELINE_RUNS_DIR", "runs"), "checkpoints.db")
+_CHECKPOINTER_LOCK = threading.Lock()
+_DEFAULT_SAVER: Optional[SqliteSaver] = None
 
-import os
+
+def get_default_checkpointer(db_path: Optional[str] = None) -> SqliteSaver:
+    global _DEFAULT_SAVER
+    if db_path is None:
+        db_path = DEFAULT_CHECKPOINTS_PATH
+    with _CHECKPOINTER_LOCK:
+        if _DEFAULT_SAVER is None or db_path != DEFAULT_CHECKPOINTS_PATH:
+            os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            saver = SqliteSaver(conn)
+            saver.setup()
+            if db_path == DEFAULT_CHECKPOINTS_PATH:
+                _DEFAULT_SAVER = saver
+            return saver
+        return _DEFAULT_SAVER
 
 def human_approval_node(state: AgentState) -> dict:
     """Generic pause point — genuinely blocks graph execution until resumed with a
@@ -55,7 +77,7 @@ def human_approval_node(state: AgentState) -> dict:
 
 
 def route_after_features(state: AgentState) -> str:
-    if state.get("requires_human_approval") and bool(state.get("guided_mode")):
+    if state.get("requires_human_approval"):
         return "human_approval"
     return "supervisor"
 
@@ -92,7 +114,7 @@ def route_from_supervisor(state: AgentState) -> str:
     return END
 
 
-def build_graph():
+def build_graph(checkpointer=None):
     graph = StateGraph(AgentState)
 
     graph.add_node("supervisor", graph_node_supervisor)
@@ -128,4 +150,7 @@ def build_graph():
 
     graph.add_edge("reporter", END)
 
-    return graph.compile(checkpointer=MemorySaver())
+    if checkpointer is None:
+        checkpointer = get_default_checkpointer()
+
+    return graph.compile(checkpointer=checkpointer)

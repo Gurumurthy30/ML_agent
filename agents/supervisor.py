@@ -323,6 +323,24 @@ def graph_node_supervisor(state: AgentState) -> dict:
     logger = get_logger(run_id)
 
     # -----------------------------------------------------------------------
+    # RunControl check (Pause/Resume/Stop)
+    # -----------------------------------------------------------------------
+    from tools.tracer import get_run_control
+    ctrl = get_run_control(run_id)
+    ctrl.wait_if_paused()
+    if ctrl.stopped:
+        logger.info("Supervisor stopped via RunControl")
+        log_event(run_id, "supervisor", "run_stop_reason", reason="user_rejected")
+        return {
+            "next_agent": "reporter",
+            "requires_human_approval": False,
+            "stop_reason": "user_rejected",
+            "supervisor_reasoning": "Pipeline execution stopped via RunControl.",
+            "task_instructions": "Synthesize final report of work completed before user stop.",
+            "last_executed_agent": "supervisor",
+        }
+
+    # -----------------------------------------------------------------------
     # Global iteration ceiling — check BEFORE calling the LLM to save a call
     # and to set approval_reason correctly (routing fn can't set state fields).
     # -----------------------------------------------------------------------
@@ -371,6 +389,46 @@ def graph_node_supervisor(state: AgentState) -> dict:
             "supervisor_reasoning": adaptive_rec.get("reason"),
             "last_executed_agent": "supervisor",
         }
+    elif adaptive_rec.get("action") == "escalate":
+        logger.info("Adaptive controller recommended escalate: %s", adaptive_rec.get("reason"))
+        next_agent = adaptive_rec.get("next_agent", "features")
+        retry_tier = adaptive_rec.get("tier", 2)
+        log_event(run_id, "supervisor", "adaptive_escalate",
+                  next_agent=next_agent, tier=retry_tier, reason=adaptive_rec.get("reason"))
+        agent_fps = dict(state.get("agent_fingerprints") or {})
+        if next_agent in ("modeler", "features", "eda_agent"):
+            agent_fps[next_agent] = compute_agent_fingerprint(next_agent, state)
+        return {
+            "next_agent": next_agent,
+            "requires_human_approval": False,
+            "retry_tier": retry_tier,
+            "task_instructions": f"Adaptive escalation: {adaptive_rec.get('reason')}",
+            "supervisor_reasoning": adaptive_rec.get("reason"),
+            "agent_fingerprints": agent_fps,
+            "last_executed_agent": "supervisor",
+        }
+    elif adaptive_rec.get("action") == "human_approval":
+        reason = adaptive_rec.get("reason", "")
+        if "stall" in reason.lower() or "plateau" in reason.lower():
+            approval_reason = "stalled"
+        elif "cap" in reason.lower():
+            approval_reason = "retry_cap_exceeded"
+        elif "ceiling" in reason.lower():
+            approval_reason = "global_iteration_ceiling"
+        else:
+            approval_reason = "unresolved_exploration"
+        stop_reason = "stalled" if approval_reason == "stalled" else "hit_safety_ceiling" if approval_reason == "global_iteration_ceiling" else "paused"
+        logger.info("Adaptive controller recommended human approval: %s (%s)", reason, approval_reason)
+        log_event(run_id, "supervisor", "adaptive_human_approval", reason=reason, approval_reason=approval_reason)
+        return {
+            "next_agent": "human_approval",
+            "requires_human_approval": True,
+            "approval_reason": approval_reason,
+            "stop_reason": stop_reason,
+            "task_instructions": f"Review adaptive controller escalation: {reason}",
+            "supervisor_reasoning": reason,
+            "last_executed_agent": "supervisor",
+        }
 
     llm = _make_llm(temperature=0)
 
@@ -393,10 +451,22 @@ Pipeline Order:
      * If retries >= 2 -> route to 'human_approval'.
 
 CRITICAL: If a stage (e.g. `profile`) is ALREADY populated in state, DO NOT route to that agent again! Advance to the next agent.
-CRITICAL: Do NOT route to the same agent at the same retry_tier if retry_counts[tier] >= 2. This is a hard code-enforced limit that will override your decision regardless — routing past it wastes a call.
+CRITICAL: Do NOT route to the same agent at the same retry_tier if retry_counts[tier] >= 2.
 Respond with a single structured decision, not prose."""
 
-    human_prompt = f"Current agent state:\n{json.dumps(state, default=str, indent=2)}"
+    from utils.scoped_memory import format_open_memory_digest
+    open_digest = format_open_memory_digest(state.get("open_summary_memory"), state=state)
+
+    pipeline_status = {
+        "mode": state.get("mode", "full_pipeline"),
+        "iteration": state.get("iteration", 0),
+        "retry_tier": state.get("retry_tier", 0),
+        "retry_counts": state.get("retry_counts") or {},
+        "last_verdict": state.get("last_verdict"),
+        "last_executed_agent": state.get("last_executed_agent"),
+    }
+
+    human_prompt = f"Pipeline Summary (Open Summarization Memory):\n{open_digest}\n\nExecution Flags:\n{json.dumps(pipeline_status, indent=2)}"
 
     decision = None
     with step_timer(run_id, "supervisor", "route"):
@@ -459,6 +529,9 @@ Respond with a single structured decision, not prose."""
         "retry_tier": decision.retry_tier,
         "task_instructions": decision.task_instructions,
         "supervisor_reasoning": decision.reasoning,
+        "open_summary_memory": {
+            "supervisor": f"Routed to {decision.next_agent} (retry_tier={decision.retry_tier}). Reasoning: {decision.reasoning[:200]}"
+        },
         "agent_fingerprints": agent_fps,
         "last_executed_agent": "supervisor",
     }
