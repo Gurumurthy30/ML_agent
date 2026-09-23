@@ -18,7 +18,7 @@ _MODEL_STANDARD = os.environ.get("PIPELINE_LLM_MODEL_STANDARD", "gpt-oss:20b-clo
 _MODEL_LARGE = os.environ.get("PIPELINE_LLM_MODEL_LARGE", "gpt-oss:120b-cloud")
 
 
-def get_llm(temperature: float = 0, large: bool = False) -> ChatOllama:
+def get_llm(temperature: float = 0, large: bool = True) -> ChatOllama:
     """
     Return a configured ChatOllama instance.
 

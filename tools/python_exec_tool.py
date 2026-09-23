@@ -48,6 +48,8 @@ def run_python_exec(
         for key, path in (input_paths or {}).items():
             env[f"INPUT_{key.upper()}"] = path
         env["OUTPUT_PATH"] = output_path
+        env["TARGET_COLUMN"] = os.environ.get("TARGET_COLUMN", "")
+        env["EXCLUDE_COLUMNS"] = os.environ.get("EXCLUDE_COLUMNS", "")
         env["PYTHONIOENCODING"] = "utf-8"
         env["MPLBACKEND"] = "Agg"
 

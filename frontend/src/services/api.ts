@@ -1,8 +1,21 @@
-import { PipelineRun, RunCreatePayload, ResumePayload } from '../types/run';
+import { PipelineRun, RunCreatePayload, ResumePayload, DatasetInspectResponse } from '../types/run';
 import { ModelAttempt, RunIteration } from '../types/attempt';
 import { ErrorGroup } from '../types/error';
 
 const API_BASE = '';
+
+export async function inspectDataset(payload: { dataset_path: string; target_column?: string }): Promise<DatasetInspectResponse> {
+  const res = await fetch(`${API_BASE}/datasets/inspect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to inspect dataset: ${res.status}`);
+  }
+  return res.json();
+}
 
 export async function createRun(payload: RunCreatePayload): Promise<PipelineRun> {
   const res = await fetch(`${API_BASE}/runs`, {

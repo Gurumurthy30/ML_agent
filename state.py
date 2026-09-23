@@ -14,7 +14,7 @@ import hashlib
 import operator
 import os
 import uuid
-from typing import Literal, Optional, Annotated
+from typing import Literal, Optional, Annotated, List
 from typing_extensions import TypedDict
 from langgraph.graph.message import add_messages
 from utils.scoped_memory import merge_private_memories, merge_open_summary
@@ -50,6 +50,8 @@ class AgentState(TypedDict):
 
     # --- Convenience fields promoted out of `profile` so downstream nodes don't re-parse it ---
     target_column: Optional[str]
+    exclude_columns: Optional[List[str]]
+    feature_columns: Optional[List[str]]
     task_type: Optional[Literal["classification", "regression"]]
 
     # --- Supervisor routing ---
@@ -107,6 +109,8 @@ def build_initial_state(
     mode: Literal["eda_only", "full_pipeline"] = "full_pipeline",
     guided_mode: bool = False,
     run_id: Optional[str] = None,
+    target_column: Optional[str] = None,
+    exclude_columns: Optional[List[str]] = None,
 ) -> AgentState:
     """Build a clean initial AgentState, computing dataset fingerprint and run_id."""
     fingerprint = _fingerprint(dataset_path)
@@ -125,7 +129,9 @@ def build_initial_state(
         "candidate_models": [],
         "metric_history": [],
         "best_metric": None,
-        "target_column": None,
+        "target_column": target_column,
+        "exclude_columns": exclude_columns or [],
+        "feature_columns": [],
         "task_type": None,
         "next_agent": None,
         "task_instructions": "",

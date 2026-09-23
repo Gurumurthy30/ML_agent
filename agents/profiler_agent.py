@@ -128,6 +128,9 @@ def _parse_json(text: str) -> Optional[dict]:
         return None
 
 
+from utils.run_context import detect_label_duplicate_columns, format_run_context, sync_run_context_env
+
+
 def profiler_agent(state: AgentState) -> dict:
     run_id = state.get("run_id") or state.get("dataset_fingerprint", "run")
     logger = get_logger(run_id)
@@ -135,21 +138,38 @@ def profiler_agent(state: AgentState) -> dict:
     with step_timer(run_id, "profiler_agent", "load_and_compute_stats"):
         df = load_dataset(state["dataset_path"])
         target_column = state.get("target_column")
+        if not target_column and "target" in df.columns:
+            target_column = "target"
+
+        # First-class leakage detection at pipeline start
+        detected_leakage = detect_label_duplicate_columns(df, target_column)
+        user_excludes = list(state.get("exclude_columns") or [])
+        exclude_columns = list(user_excludes)
+        for col in detected_leakage:
+            if col not in exclude_columns:
+                exclude_columns.append(col)
+
+        feature_columns = [str(c) for c in df.columns if c != target_column and c not in exclude_columns]
+        sync_run_context_env(target_column, exclude_columns)
         computed_profile = compute_data_profile(df, target_column)
 
     llm = _make_llm()
 
-    system_prompt = """You are the Profiler agent in a multi-agent ML pipeline.
+    run_context_block = format_run_context(target_column, exclude_columns, feature_columns)
+
+    system_prompt = f"""{run_context_block}
+
+You are the Profiler agent in a multi-agent ML pipeline.
 Interpret pre-computed dataset statistics; never invent numbers yourself.
 Flag data quality issues (high nulls, high-cardinality categoricals, likely leakage,
 class imbalance if target given, notable outliers). If detected_modalities includes
 "image_path", "audio_path", or "free_text", note that as a modeling consideration
 (e.g. "this is an image classification task with tabular metadata") rather than
 treating it as an ordinary categorical column. Recommend a metric.
-Output ONLY valid JSON: {"dataset_name": str, "modality": str, "rows": int,
+Output ONLY valid JSON: {{"dataset_name": str, "modality": str, "rows": int,
 "target_column": str|null, "recommended_metric": str, "data_quality_flags": [str],
-"features": [{"name": str, "type": str, "modality": str, "null_pct": float,
-"cardinality": int, "outliers": int|null, "notes": str}]}"""
+"features": [{{"name": str, "type": str, "modality": str, "null_pct": float,
+"cardinality": int, "outliers": int|null, "notes": str}}]}}"""
 
     human_prompt = f"""Computed dataset profile:
 {json.dumps(computed_profile, indent=2)}
@@ -189,7 +209,19 @@ Agent state context:
     result["modality_summary"] = computed_profile["modality_summary"]
     result["detected_modalities"] = computed_profile["detected_modalities"]
 
-    target_col = result.get("target_column")
+    # Target column from state is authoritative
+    target_col = target_column or result.get("target_column")
+    result["target_column"] = target_col
+    result["exclude_columns"] = exclude_columns
+    result["feature_columns"] = feature_columns
+
+    if detected_leakage:
+        if not isinstance(result.get("data_quality_flags"), list):
+            result["data_quality_flags"] = []
+        leakage_flag = f"Target leakage alert: column(s) {detected_leakage} are 1:1 duplicate encodings of target '{target_col}' and are excluded from features."
+        if leakage_flag not in result["data_quality_flags"]:
+            result["data_quality_flags"].append(leakage_flag)
+
     inferred_task_type = result.get("task_type")
     if not inferred_task_type and target_col and target_col in df.columns:
         series = df[target_col]
@@ -201,11 +233,14 @@ Agent state context:
               flags=result.get("data_quality_flags"), metric=result.get("recommended_metric"),
               detected_modalities=result["detected_modalities"],
               target_column=target_col, task_type=inferred_task_type or "classification",
+              exclude_columns=exclude_columns, feature_columns=feature_columns,
               profile=result)
 
     return {
         "profile": result,
         "target_column": target_col,
+        "exclude_columns": exclude_columns,
+        "feature_columns": feature_columns,
         "task_type": inferred_task_type or "classification",
     }
 

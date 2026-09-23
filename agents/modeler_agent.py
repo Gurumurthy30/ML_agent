@@ -35,6 +35,7 @@ from tools.logger import get_logger, log_event, step_timer
 from tools.streaming import invoke_structured_robust
 from utils.safe import to_float, is_better, safe_diff
 from utils.exceptions import MetricUnavailableError
+from utils.run_context import format_run_context
 
 _TMP_DIR = "artifacts/models"
 os.makedirs(_TMP_DIR, exist_ok=True)
@@ -179,8 +180,15 @@ def modeler_agent(state: AgentState) -> dict:
             "private_scorecard_and_blunders": scorecard_text,
         }
 
+        run_context_block = format_run_context(
+            state.get("target_column"),
+            state.get("exclude_columns"),
+            state.get("feature_columns"),
+        )
+
         system_prompt = (
-            "You are the Modeler agent for a tabular-data ML pipeline. Decide the next model "
+            run_context_block + "\n\n"
+            + "You are the Modeler agent for a tabular-data ML pipeline. Decide the next model "
             "family to try, given the current feature set.\n\n"
 
             "<already_tried>\n"
@@ -215,9 +223,9 @@ def modeler_agent(state: AgentState) -> dict:
             "</blunder_prevention>\n\n"
 
             "<stopping_rule>\n"
-            "Stop once you have tried 3+ model families and have one you're confident "
-            "recommending, or once every reasonable family for this data has been exhausted — "
-            "whichever comes first. Do not explore indefinitely, and never reuse a family.\n"
+            "1. Stop IMMEDIATELY if cv_score reaches 1.0 (or within 0.0001 of 1.0) — a perfect score cannot be improved upon.\n"
+            "2. Stop once you have tried 2-3 model families and have one you're confident recommending, or once every reasonable family for this data has been exhausted — whichever comes first.\n"
+            "3. Do not explore indefinitely, and never reuse a family.\n"
             "</stopping_rule>"
             + retry_note
         )
@@ -275,7 +283,8 @@ def modeler_agent(state: AgentState) -> dict:
                 enhanced_spec = f"Train an alternative {alt_fam} {task_type} model (since {proposed_fam} was already evaluated). Use 5-fold cross-validation."
                 logger.info("Modeler repetition guard: redirected from %s to %s", proposed_fam, alt_fam)
 
-        # Standardize robust data loading instructions for Coder
+        target_col = state.get("target_column")
+        exclude_cols = state.get("exclude_columns") or []
         is_parquet = dataset_path.lower().endswith(".parquet")
         loader_snippet = (
             "pd.read_parquet(os.environ['INPUT_DATASET'])"
@@ -284,10 +293,13 @@ def modeler_agent(state: AgentState) -> dict:
         )
         data_instruction = (
             f"Ensure robust data handling: load dataset from INPUT_DATASET using {loader_snippet}. "
-            f"Separate features X and target y using '{target_col}'. "
+            f"Drop target '{target_col}' and exclude columns {exclude_cols} before building X: X = df.drop(columns=[c for c in ['{target_col}'] + {exclude_cols} if c in df.columns]). "
+            f"Set y = df['{target_col}']. "
             f"If classification and target is string/categorical, encode with LabelEncoder. "
             f"Impute missing numeric values using SimpleImputer(strategy='median'). "
             f"Evaluate using 5-fold cross-validation with metric '{metric_name}'. "
+            f"Fit the final model on the full feature set and save it using: "
+            f"import joblib; os.makedirs(os.path.dirname(os.path.abspath(os.environ['OUTPUT_PATH'])), exist_ok=True); joblib.dump(model, os.environ['OUTPUT_PATH']). "
             f"ALWAYS print a final line: import json; print('RESULT_JSON: ' + json.dumps({{'model_family': '<FamilyName>', 'cv_score': float(score), 'metric': '{metric_name}'}}))\n\n"
         )
         final_task_spec = f"{data_instruction}Task: {enhanced_spec}"
@@ -298,9 +310,15 @@ def modeler_agent(state: AgentState) -> dict:
                 task_spec=final_task_spec,
                 input_paths={"dataset": dataset_path},
                 output_path=output_path,
-                context={"profile": profile, "target_column": state.get("target_column"),
-                        "task_type": state.get("task_type"), "metric": metric_name,
-                        "data_instruction": data_instruction},
+                context={
+                    "profile": profile,
+                    "target_column": state.get("target_column"),
+                    "exclude_columns": state.get("exclude_columns"),
+                    "feature_columns": state.get("feature_columns"),
+                    "task_type": state.get("task_type"),
+                    "metric": metric_name,
+                    "data_instruction": data_instruction,
+                },
                 run_id=run_id, timeout=exec_timeout,
                 parent_agent="modeler_agent", parent_iteration=iteration,
                 private_memory=state.get("private_memories"),
@@ -454,16 +472,33 @@ def modeler_agent(state: AgentState) -> dict:
                   parent_agent="modeler_agent",
                   parent_iteration=iteration)
 
+        # Check if score reached 1.0 (or within 1e-4 of 1.0) on bounded metrics
+        is_perfect = (
+            higher_is_better and score is not None and score >= 0.9999
+            and any(m in metric_name.lower() for m in ["acc", "f1", "auc", "roc", "precision", "recall", "score", "r2"])
+        )
+        if is_perfect:
+            logger.info("Modeler achieved perfect score (%.4f). Stopping exploration loop early (converged).", score)
+            condensed = f"iter {iteration}: {family} -> {parsed.get('metric', metric_name)}={score:.4f} (CONVERGED: PERFECT SCORE)"
+            return {
+                "condensed": condensed, "record": record,
+                "metric": score, "metric_name": parsed.get("metric", metric_name),
+                "metric_delta": delta, "is_improvement": is_improvement, "is_stall": False,
+                "should_exit": True, "exit_reason": "converged",
+            }
+
         condensed = f"iter {iteration}: {family} -> {parsed.get('metric', metric_name)}={score:.4f}"
         return {
             "condensed": condensed, "record": record,
-            "metric": score, "metric_name": parsed.get("metric", metric_name),
+            "metric": score, "metric_name": parsed.get('metric', metric_name),
             "metric_delta": delta, "is_improvement": is_improvement, "is_stall": is_stall,
         }
 
     def plateau_check(iteration):
         """Modeler's mechanical backstop: stop if `best_metric` hasn't improved beyond
         METRIC_IMPROVEMENT_EPSILON over the last _PLATEAU_WINDOW iterations."""
+        if higher_is_better and best_metric is not None and best_metric >= 0.9999:
+            return True
         if iteration < _PLATEAU_WINDOW or best_metric is None:
             return False
         window_start = iteration - _PLATEAU_WINDOW
@@ -503,7 +538,7 @@ def modeler_agent(state: AgentState) -> dict:
 
     # Both "ceiling" and "plateau" mean the LLM didn't call it converged on its own ->
     # advisory only, never blocks (best-so-far model is already recorded above).
-    if loop_result["exit_reason"] not in ("llm_stop", "user_stopped"):
+    if loop_result["exit_reason"] not in ("llm_stop", "converged", "user_stopped"):
         update["requires_human_approval"] = True
         update["approval_reason"] = "unresolved_exploration"
 

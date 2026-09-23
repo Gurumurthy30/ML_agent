@@ -27,6 +27,7 @@ from state import AgentState
 from agents.coder_agent import coder_agent
 from agents.loop_utils import compute_iteration_ceiling, compute_exec_timeout, run_exploration_loop
 from tools.logger import get_logger, log_event, step_timer
+from utils.run_context import format_run_context
 
 _TMP_DIR = "artifacts/features"
 os.makedirs(_TMP_DIR, exist_ok=True)
@@ -137,8 +138,15 @@ def features_agent(state: AgentState) -> dict:
                 f"</invariants>"
             )
 
+        run_context_block = format_run_context(
+            state.get("target_column"),
+            state.get("exclude_columns"),
+            state.get("feature_columns"),
+        )
+
         system_prompt = (
-            "You are the Features agent for a tabular-data ML pipeline. Decide the SINGLE next "
+            run_context_block + "\n\n"
+            + "You are the Features agent for a tabular-data ML pipeline. Decide the SINGLE next "
             "feature-engineering step, building on the CURRENT transformed dataset (not the raw one).\n\n"
 
             "<inputs_to_review>\n"
@@ -215,7 +223,12 @@ def features_agent(state: AgentState) -> dict:
                 task_spec=coder_spec,
                 input_paths={"dataset": current_path},
                 output_path=output_path,
-                context={"profile": profile, "target_column": state.get("target_column")},
+                context={
+                    "profile": profile,
+                    "target_column": state.get("target_column"),
+                    "exclude_columns": state.get("exclude_columns"),
+                    "feature_columns": state.get("feature_columns"),
+                },
                 run_id=run_id, timeout=exec_timeout,
                 parent_agent="features_agent", parent_iteration=iteration,
                 private_memory=state.get("private_memories"),

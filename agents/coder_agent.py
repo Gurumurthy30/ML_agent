@@ -55,7 +55,7 @@ def _run_coro_sync(coro):
     return result_box["value"]
 
 
-_make_llm = lambda: get_llm(large=True)
+_make_llm = lambda *args, **kwargs: get_llm(*args, large=True, **kwargs)
 
 
 def _execute(code: str, input_paths: dict, output_path: str, timeout: int, run_id: str) -> dict:
@@ -124,11 +124,29 @@ def coder_agent(
 
     llm = _make_llm()  # Coder uses the larger model for better code generation
 
+    target_column = None
+    exclude_columns = None
+    feature_columns = None
+    if isinstance(context, dict):
+        target_column = context.get("target_column")
+        exclude_columns = context.get("exclude_columns")
+        feature_columns = context.get("feature_columns")
+    if not target_column:
+        target_column = os.environ.get("TARGET_COLUMN")
+    if exclude_columns is None and os.environ.get("EXCLUDE_COLUMNS"):
+        exclude_columns = [c.strip() for c in os.environ.get("EXCLUDE_COLUMNS", "").split(",") if c.strip()]
+
+    from utils.run_context import format_run_context, sync_run_context_env
+    sync_run_context_env(target_column, exclude_columns)
+    run_context_block = format_run_context(target_column, exclude_columns, feature_columns)
+
     from utils.scoped_memory import format_coder_private_history
     pm = private_memory or (context.get("private_memories") if isinstance(context, dict) else None)
     memory_notes = format_coder_private_history(pm)
 
-    system_prompt = f"""You are the Coder sub-agent for a tabular-data ML pipeline. Write a
+    system_prompt = f"""{run_context_block}
+
+You are the Coder sub-agent for a tabular-data ML pipeline. Write a
 complete, self-contained Python script that accomplishes the task below. Do not hardcode
 a fixed technique — choose whatever approach best fits the actual data characteristics
 given in the context.
@@ -137,16 +155,25 @@ given in the context.
 - Read input files from `os.environ["INPUT_<KEY>"]` per the input_paths keys listed
   below (e.g. `INPUT_DATASET`).
 - To load a dataset from `INPUT_DATASET`: check the file extension:
-  if path ends with `.parquet`, use `pd.read_parquet(path)`.
-  if path ends with `.csv`, use `pd.read_csv(path)` (with encoding fallback if needed).
+  if path ends with `.parquet` or `.pq`: use `pd.read_parquet(path)`.
+  if path ends with `.csv`: use `pd.read_csv(path)` (with encoding fallback to 'latin1' or on_bad_lines='skip' if needed).
+- Loading target and feature columns:
+  target_col = os.environ.get("TARGET_COLUMN", "target")
+  exclude_cols = [c.strip() for c in os.environ.get("EXCLUDE_COLUMNS", "").split(",") if c.strip()]
+  Before building X, ALWAYS drop both target_col and every column in exclude_cols:
+      X = df.drop(columns=[c for c in [target_col] + exclude_cols if c in df.columns])
+      y = df[target_col] if target_col in df.columns else None
 - Inspect column dtypes/characteristics from context to decide preprocessing per column
   (numeric vs categorical vs datetime vs high-cardinality string, etc.) — use
   pandas/numpy/sklearn/scipy as appropriate.
 - Write your primary result to `os.environ["OUTPUT_PATH"]` using the format matching its
-  extension:
-  * For `.json`: use `json.dump(data, f, default=str, indent=2)` (use default=str so numpy int64/float64 serializes safely).
+  extension (supporting both forward and backward slashes on Windows):
+  * For `.joblib` (trained models / estimators): use `import joblib; joblib.dump(model, path)`.
+  * For `.pkl` or `.pickle`: use `import pickle; pickle.dump(model, open(path, "wb"))`.
+  * For `.json`: use `with open(path, "w", encoding="utf-8") as f: json.dump(data, f, default=str, indent=2)` (use default=str so numpy int64/float64 serializes safely).
   * For `.csv`: use `df.to_csv(path, index=False)`.
   * For `.parquet`: use `df.to_parquet(path, index=False)`.
+- Never abort or print "Unsupported OUTPUT_PATH extension". Always inspect the extension of `os.environ["OUTPUT_PATH"]` and save accordingly.
 - Ensure the parent output directory exists before writing:
   `os.makedirs(os.path.dirname(os.path.abspath(os.environ["OUTPUT_PATH"])), exist_ok=True)`.
 </io_contract>
@@ -159,8 +186,17 @@ given in the context.
 - Instead of visuals, compute and print detailed numerical summaries to stdout:
   correlation matrices, missing-value tables, distribution/skewness metrics, etc. as
   relevant to the task.
-- Set random seeds (e.g. `random_state=42` / `np.random.seed(...)`) wherever
+- Set random seeds (e.g. `random_state=42` / `np.random.seed(42)`) wherever
   stochasticity is involved, so results are reproducible across retries.
+- For OneHotEncoder: ALWAYS use `OneHotEncoder(handle_unknown="ignore", sparse_output=False)` (NEVER `sparse=False`, which was removed in modern scikit-learn).
+- For pandas select_dtypes: When selecting string/object columns, use `df.select_dtypes(include=['object', 'string', 'category'])` to avoid deprecation warnings.
+- For VIF (Variance Inflation Factor) / Multicollinearity:
+  * Select ONLY numeric columns: `numeric_cols = df.select_dtypes(include=[np.number]).columns`.
+  * Drop constant columns (std == 0) and fill missing values before computing VIF.
+  * Always wrap VIF calculation in a try/except block; if a singular matrix or LinAlgError occurs, fall back to correlation matrix summary without crashing.
+- For cross-validation (cross_val_score / StratifiedKFold):
+  * For classification, ensure n_splits does not exceed the minimum class count: `n_splits = min(5, max(2, int(df[target_col].value_counts().min())))`.
+  * If sample count is small (< 10), use `n_splits = min(3, len(df))`.
 </hard_constraints>
 
 {memory_notes}

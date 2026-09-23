@@ -319,6 +319,24 @@ class AdaptiveStoppingPolicy:
                 "reason": env_msg,
             }
 
+        # 1.5 Check if Maximum Metric (Converged) reached
+        best_m = to_float(state.get("best_metric"))
+        if best_m is not None and best_m >= 0.9999:
+            record_event(
+                run_id=run_id,
+                agent="adaptive_controller",
+                event_type="metric_converged",
+                reason=f"Maximum performance score achieved ({best_m:.4f})",
+                decision="wind_down",
+                next_agent="reporter",
+            )
+            return {
+                "action": "wind_down",
+                "next_agent": "reporter",
+                "stop_reason": "converged",
+                "reason": f"Maximum performance achieved ({best_m:.4f}). Pipeline fully converged.",
+            }
+
         # 2. Check Consecutive Error Loop
         if self.error_dedup.should_force_escalate(run_id):
             decision = "escalate" if proposed_tier < 2 else "wind_down"

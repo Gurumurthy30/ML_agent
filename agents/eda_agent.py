@@ -42,6 +42,7 @@ class EdaStepDecision(BaseModel):
 
 
 from tools.streaming import stream_text, invoke_structured_robust
+from utils.run_context import format_run_context
 
 _make_llm = get_llm
 
@@ -63,11 +64,18 @@ def eda_agent(state: AgentState) -> dict:
         context = {
             "profile": profile,
             "target_column": state.get("target_column"),
+            "exclude_columns": state.get("exclude_columns"),
+            "feature_columns": state.get("feature_columns"),
             "task_type": state.get("task_type"),
             "prior_analyses_this_run": condensed_history,
             "private_eda_history": private_eda,
         }
-        system_prompt = """You are the EDA agent in a multi-agent ML pipeline for tabular data. You
+        run_context_block = format_run_context(
+            state.get("target_column"),
+            state.get("exclude_columns"),
+            state.get("feature_columns"),
+        )
+        system_prompt = run_context_block + "\n\n" + """You are the EDA agent in a multi-agent ML pipeline for tabular data. You
 decide what exploratory analysis to run next on the raw dataset. Each analysis is
 independent — you don't need to build on the previous one. Never invent findings
 yourself — only decide what code should compute.
@@ -169,7 +177,12 @@ inventing a new name for the same concept each time.
                 task_spec=spec_text,
                 input_paths={"dataset": state["dataset_path"]},
                 output_path=output_path,
-                context={"profile": profile, "target_column": state.get("target_column")},
+                context={
+                    "profile": profile,
+                    "target_column": state.get("target_column"),
+                    "exclude_columns": state.get("exclude_columns"),
+                    "feature_columns": state.get("feature_columns"),
+                },
                 run_id=run_id, timeout=exec_timeout,
                 parent_agent="eda_agent", parent_iteration=iteration,
                 private_memory=state.get("private_memories"),

@@ -37,6 +37,8 @@ from langgraph.types import Command
 
 from state import build_initial_state
 from graph import build_graph
+from utils.run_context import detect_label_duplicate_columns, sync_run_context_env
+import pandas as pd
 from tools.tracer import (
     init_db,
     rotate_and_prune_storage,
@@ -162,6 +164,8 @@ def _run_graph_in_background(stream_input, run_id: str) -> threading.Thread:
 # ---------------------------------------------------------------------------
 class RunCreateRequest(BaseModel):
     dataset_path: str = Field(..., description="Absolute or relative path to the dataset file (.csv or .parquet)")
+    target_column: Optional[str] = Field(None, description="Target column to predict (required from UI)")
+    exclude_columns: Optional[List[str]] = Field(None, description="Leakage / ID columns to exclude")
     mode: str = Field("full_pipeline", description="Pipeline mode: 'full_pipeline' or 'eda_only'")
     guided_mode: bool = Field(False, description="Whether to require human approval on every feature modification")
     metric_name: Optional[str] = Field(None, description="Target optimization metric (e.g., 'f1', 'rmse')")
@@ -170,6 +174,11 @@ class RunCreateRequest(BaseModel):
     user_instructions: Optional[str] = Field(None, description="Custom prompt instructions for the run")
     is_baseline: bool = Field(False, description="Whether this run is designated as the baseline benchmark")
     baseline_score: Optional[float] = Field(None, description="Known baseline metric score")
+
+
+class DatasetInspectRequest(BaseModel):
+    dataset_path: str = Field(..., description="Absolute or relative path to dataset file")
+    target_column: Optional[str] = Field(None, description="Target column to evaluate for potential leakage candidates")
 
 
 class ResumeRequest(BaseModel):
@@ -190,6 +199,42 @@ class BaselineUpdateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+@app.post("/datasets/inspect")
+def inspect_dataset(req: DatasetInspectRequest):
+    """
+    Inspects a dataset file to return columns, total rows, and auto-detected
+    leakage candidates (1:1 bijective encodings of target_column).
+    """
+    if not req.dataset_path or not os.path.exists(req.dataset_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Dataset file not found: '{req.dataset_path}'. Please provide an existing file path.",
+        )
+    try:
+        if req.dataset_path.endswith(".csv"):
+            df = pd.read_csv(req.dataset_path)
+        elif req.dataset_path.endswith((".parquet", ".pq")):
+            df = pd.read_parquet(req.dataset_path)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported dataset file format. Use .csv or .parquet.")
+
+        cols = [str(c) for c in df.columns]
+        leakage = []
+        if req.target_column and req.target_column in df.columns:
+            leakage = detect_label_duplicate_columns(df, req.target_column)
+
+        return {
+            "columns": cols,
+            "rows": len(df),
+            "target_column": req.target_column,
+            "leakage_candidates": leakage,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to inspect dataset: {exc}")
+
+
 @app.post("/runs", status_code=201)
 def create_pipeline_run(req: RunCreateRequest):
     """
@@ -216,9 +261,12 @@ def create_pipeline_run(req: RunCreateRequest):
             dataset_path=req.dataset_path,
             mode=req.mode,
             guided_mode=req.guided_mode,
+            target_column=req.target_column,
+            exclude_columns=req.exclude_columns,
         )
         if req.user_instructions:
             initial_state["task_instructions"] = req.user_instructions
+        sync_run_context_env(req.target_column, req.exclude_columns)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed building initial pipeline state: {exc}")
 

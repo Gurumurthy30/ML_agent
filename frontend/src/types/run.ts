@@ -40,6 +40,8 @@ export interface PipelineRun {
 
 export interface RunCreatePayload {
   dataset_path: string;
+  target_column: string;
+  exclude_columns?: string[];
   mode?: 'full_pipeline' | 'eda_only';
   guided_mode?: boolean;
   metric_name?: string;
@@ -48,6 +50,13 @@ export interface RunCreatePayload {
   user_instructions?: string;
   is_baseline?: boolean;
   baseline_score?: number;
+}
+
+export interface DatasetInspectResponse {
+  columns: string[];
+  rows: number;
+  target_column?: string | null;
+  leakage_candidates: string[];
 }
 
 export interface ResumePayload {

@@ -117,16 +117,27 @@ Respond with a single structured decision:
 
     human_prompt = f"Context:\n{json.dumps(context, default=str, indent=2)}"
 
+    from utils.safe import to_float
+    best_m = to_float(state.get("best_metric"))
     verdict = None
-    with step_timer(run_id, "judge_agent", "evaluate"):
-        try:
-            verdict = invoke_structured_robust(
-                llm, JudgeVerdict,
-                [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
-                run_id=run_id, agent="judge_agent"
-            )
-        except Exception as exc:
-            logger.warning("Judge LLM call failed (%s); using fallback acceptance verdict", exc)
+
+    if best_m is not None and best_m >= 0.9999:
+        logger.info("Judge: best_metric is %f (>= 0.9999) -> immediate acceptance (converged)", best_m)
+        verdict = JudgeVerdict(
+            verdict="accept",
+            feedback=f"Candidate model achieved maximum metric score ({best_m:.4f}). Pipeline converged successfully.",
+            reasoning=f"Model reached perfect score ({best_m:.4f}); cannot be improved further."
+        )
+    else:
+        with step_timer(run_id, "judge_agent", "evaluate"):
+            try:
+                verdict = invoke_structured_robust(
+                    llm, JudgeVerdict,
+                    [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
+                    run_id=run_id, agent="judge_agent"
+                )
+            except Exception as exc:
+                logger.warning("Judge LLM call failed (%s); using fallback acceptance verdict", exc)
 
     if verdict is None:
         verdict = JudgeVerdict(
