@@ -66,7 +66,8 @@ class AgentState(TypedDict):
 
     # --- Judge + Human Approval ---
     last_verdict: Optional[Literal["accept", "reject"]]
-    judge_feedback: Optional[str]
+    judge_feedback: Annotated[list, operator.add]  # accumulates verdict feedback across retry rounds
+    rejected_family: Optional[str]  # model family rejected by judge on tier-1 retry
     requires_human_approval: bool
     approval_reason: Optional[Literal[
         "destructive_action", "guided_mode", "policy_sensitive", "high_risk",
@@ -132,7 +133,8 @@ def build_initial_state(
         "retry_tier": 0,
         "retry_counts": {},
         "last_verdict": None,
-        "judge_feedback": None,
+        "judge_feedback": [],
+        "rejected_family": None,
         "requires_human_approval": False,
         "approval_reason": None,
         "approval_status": None,

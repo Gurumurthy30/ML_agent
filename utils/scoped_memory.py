@@ -225,7 +225,8 @@ def format_open_memory_digest(
     judge_text = summary.get("judge")
     if not judge_text and state and state.get("last_verdict"):
         verdict = state.get("last_verdict")
-        feedback = (state.get("judge_feedback") or "")[:200]
+        fb = state.get("judge_feedback")
+        feedback = (fb[-1] if isinstance(fb, list) and fb else str(fb or ""))[:200]
         judge_text = f"Verdict: {verdict}. Feedback: {feedback}"
     if judge_text:
         sections.append(f"[Judge]: {str(judge_text).strip()}")

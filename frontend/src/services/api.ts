@@ -1,5 +1,5 @@
 import { PipelineRun, RunCreatePayload, ResumePayload } from '../types/run';
-import { ModelAttempt } from '../types/attempt';
+import { ModelAttempt, RunIteration } from '../types/attempt';
 import { ErrorGroup } from '../types/error';
 
 const API_BASE = '';
@@ -52,6 +52,14 @@ export async function getRunErrors(runId: string): Promise<ErrorGroup[]> {
   const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/errors`);
   if (!res.ok) {
     throw new Error(`Failed to get errors for ${runId}: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function getRunIterations(runId: string, agent: string = 'modeler_agent'): Promise<RunIteration[]> {
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/iterations?agent=${encodeURIComponent(agent)}`);
+  if (!res.ok) {
+    throw new Error(`Failed to get iterations for ${runId}: ${res.statusText}`);
   }
   return res.json();
 }
@@ -133,3 +141,4 @@ export async function getDatasetPreview(runId: string, limit: number = 50): Prom
   }
   return res.json();
 }
+

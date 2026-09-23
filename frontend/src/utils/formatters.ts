@@ -33,18 +33,18 @@ export function getStatusColor(status: RunStatus, stopReason?: StopReason): {
 } {
   if (status === 'running') {
     return {
-      dot: 'bg-cyan-400 animate-pulse-fast',
-      badgeBg: 'bg-cyan-950/70 border-cyan-500/40',
-      badgeText: 'text-cyan-300',
+      dot: 'bg-violet-500 animate-pulse',
+      badgeBg: 'bg-violet-50 border-violet-200',
+      badgeText: 'text-violet-700',
       label: 'Running',
     };
   }
 
   if (status === 'paused') {
     return {
-      dot: 'bg-amber-400 animate-pulse',
-      badgeBg: 'bg-amber-950/70 border-amber-500/40',
-      badgeText: 'text-amber-300',
+      dot: 'bg-amber-500 animate-pulse',
+      badgeBg: 'bg-amber-50 border-amber-200',
+      badgeText: 'text-amber-700',
       label: stopReason === 'human_approval_required' ? 'Needs Approval' : 'Paused',
     };
   }
@@ -52,27 +52,27 @@ export function getStatusColor(status: RunStatus, stopReason?: StopReason): {
   // Terminal states with distinct 5-way stop_reason mapping
   if (stopReason === 'converged') {
     return {
-      dot: 'bg-emerald-400',
-      badgeBg: 'bg-emerald-950/70 border-emerald-500/40',
-      badgeText: 'text-emerald-300',
+      dot: 'bg-emerald-500',
+      badgeBg: 'bg-emerald-50 border-emerald-200',
+      badgeText: 'text-emerald-700',
       label: 'Converged',
     };
   }
 
   if (stopReason === 'stalled') {
     return {
-      dot: 'bg-orange-400',
-      badgeBg: 'bg-orange-950/70 border-orange-500/40',
-      badgeText: 'text-orange-300',
+      dot: 'bg-orange-500',
+      badgeBg: 'bg-orange-50 border-orange-200',
+      badgeText: 'text-orange-700',
       label: 'Stalled',
     };
   }
 
   if (stopReason === 'hit_safety_ceiling') {
     return {
-      dot: 'bg-purple-400',
-      badgeBg: 'bg-purple-950/70 border-purple-500/40',
-      badgeText: 'text-purple-300',
+      dot: 'bg-purple-500',
+      badgeBg: 'bg-purple-50 border-purple-200',
+      badgeText: 'text-purple-700',
       label: 'Ceiling Hit',
     };
   }
@@ -80,34 +80,34 @@ export function getStatusColor(status: RunStatus, stopReason?: StopReason): {
   if (status === 'failed' || stopReason === 'errored') {
     return {
       dot: 'bg-rose-500',
-      badgeBg: 'bg-rose-950/70 border-rose-500/40',
-      badgeText: 'text-rose-300',
+      badgeBg: 'bg-rose-50 border-rose-200',
+      badgeText: 'text-rose-700',
       label: 'Errored',
     };
   }
 
   if (status === 'stopped' || stopReason === 'user_rejected' || stopReason === 'user_stopped') {
     return {
-      dot: 'bg-slate-400',
-      badgeBg: 'bg-slate-800/80 border-slate-600/40',
-      badgeText: 'text-slate-300',
+      dot: 'bg-stone-400',
+      badgeBg: 'bg-stone-100 border-stone-200',
+      badgeText: 'text-stone-600',
       label: 'Stopped',
     };
   }
 
   if (status === 'completed') {
     return {
-      dot: 'bg-emerald-400',
-      badgeBg: 'bg-emerald-950/70 border-emerald-500/40',
-      badgeText: 'text-emerald-300',
+      dot: 'bg-emerald-500',
+      badgeBg: 'bg-emerald-50 border-emerald-200',
+      badgeText: 'text-emerald-700',
       label: 'Completed',
     };
   }
 
   return {
-    dot: 'bg-slate-500',
-    badgeBg: 'bg-slate-800 border-slate-600',
-    badgeText: 'text-slate-300',
+    dot: 'bg-stone-400',
+    badgeBg: 'bg-stone-100 border-stone-200',
+    badgeText: 'text-stone-600',
     label: status,
   };
 }

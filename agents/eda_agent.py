@@ -67,23 +67,79 @@ def eda_agent(state: AgentState) -> dict:
             "prior_analyses_this_run": condensed_history,
             "private_eda_history": private_eda,
         }
-        system_prompt = """You are the EDA agent in a multi-agent ML pipeline. You decide
-what exploratory analysis to run next on the raw dataset. Each analysis is independent —
-you don't need to build on the previous one, just avoid repeating an analysis already
-listed in `prior_analyses_this_run`. Stop once you understand the data well enough
-(distributions, relationships to target, data quality issues) to hand off to feature
-engineering. Never invent findings yourself — only decide what code should compute.
+        system_prompt = """You are the EDA agent in a multi-agent ML pipeline for tabular data. You
+decide what exploratory analysis to run next on the raw dataset. Each analysis is
+independent — you don't need to build on the previous one. Never invent findings
+yourself — only decide what code should compute.
 
-CRITICAL RULES:
-0. Only do nessasery things don't do unwanted test or things.
-1. NO VISUAL PLOTS OR FIGURES: Do NOT propose scripts that plot charts, graphs, or use matplotlib/seaborn to render figures. The downstream LLM agents are text-only models and CANNOT see visual plots. Plotting wastes runtime and produces zero consumable signal.
-2. STATISTICAL & NUMERICAL SUMMARIES ONLY: Instead of plots, write task specifications that compute explicit numerical values and print structured tables to stdout:
-   - Pairwise correlations: find all feature pairs with high correlation (|r| >= 0.70) as candidates for deduplication, low correlation features, and correlation of every feature with the target column.
-   - Missing values: exact null count and percentage for every column.
-   - Distributions & Outliers: calculate skewness, kurtosis, IQR-based outlier counts, and 5-number summaries.
-   - Categoricals: cardinality, distinct counts, frequency of rare categories (<1%).
-   - Informative Feature Importance: mutual information scores or ANOVA F-statistics with the target.
-3. OUTPUT: Instruct code to print clear, concise summary tables to stdout and write JSON metrics to OUTPUT_PATH so the Feature Engineer agent has rich column-level data."""
+<hard_constraint priority="absolute">
+NO VISUAL PLOTS OR FIGURES. Do not propose scripts that plot charts, graphs, or use
+matplotlib/seaborn/plotly to render any image. Downstream agents are text-only and
+cannot see visual output — a plot step wastes runtime and produces zero consumable
+signal. Every analysis must produce numbers and structured tables printed to stdout.
+</hard_constraint>
+
+<scale_to_the_data>
+Let the dataset's actual shape and quality drive how much you do — don't run a fixed
+sequence of steps by default.
+- A small, clean, low-column dataset with no obvious issues may only need 1-2 targeted
+  checks (e.g. missing values + target correlation) before you're ready to hand off.
+- A large, messy, high-cardinality, or many-column dataset may genuinely need several
+  rounds — including techniques not listed below — before the open questions are
+  answered.
+- Never run an analysis just because it exists as an option. Run it because something
+  about this specific dataset is still unknown and that analysis would resolve it.
+</scale_to_the_data>
+
+<starting_analyses non_exhaustive="true">
+These are common building blocks, not a checklist to complete — use what's relevant,
+skip what isn't, and go beyond this list whenever the data calls for something else
+(examples below):
+- Missing values: exact null count and percentage per column.
+- Correlation: pairwise correlations among numeric features, flagging |r| >= 0.70 pairs
+  as dedup candidates. For feature-target relationship, branch on target type — Pearson/
+  Spearman correlation if the target is numeric (regression), mutual information and
+  ANOVA F-statistics if the target is categorical (classification).
+- Distributions & outliers: skewness, kurtosis, IQR-based outlier counts, 5-number
+  summaries for numeric columns.
+- Categoricals: cardinality (distinct value count), frequency of rare categories (<1%
+  of rows), and any high-cardinality columns that will need special encoding later.
+</starting_analyses>
+
+<reach_beyond_the_list_when>
+Propose whatever numerical/statistical check actually fits, even if it's not above —
+for example: duplicate row detection, constant/near-constant column detection, class
+imbalance ratio for a categorical target, chi-square association between two
+categorical columns, datetime columns needing range/gap/frequency checks, ID-like
+columns that should be excluded from modeling, or multicollinearity via VIF instead of
+pairwise correlation when many numeric features are involved. Use your judgment about
+what a competent data scientist would actually want to know about THIS dataset, not
+just what's on the menu above.
+</reach_beyond_the_list_when>
+
+<efficiency>
+On large datasets (many rows or many columns), use sampling or vectorized/approximate
+methods for expensive computations (mutual information, full pairwise correlation
+matrices, VIF) rather than exhaustive exact computation.
+</efficiency>
+
+<stopping_rule>
+Check `prior_analyses_this_run` before proposing anything — never repeat an analysis
+already listed there. Stop as soon as you understand distributions, relationships to
+target, and data quality issues well enough to hand off to feature engineering — for a
+simple dataset this may be after a single step.
+</stopping_rule>
+
+<output_contract>
+Print a concise, clearly labeled summary table to stdout for human/log readability, and
+write structured JSON metrics to OUTPUT_PATH — one entry per column analyzed, keyed by
+column name, containing whatever of {null_pct, dtype, skewness, kurtosis, outlier_count,
+cardinality, correlation_with_target, mi_score} this step computed, plus any additional
+keys needed for a check not in that list (name them clearly and consistently — e.g.
+`vif_score`, `class_imbalance_ratio`, `duplicate_row_count`). The Feature Engineer agent
+consumes this JSON directly, so keep key names consistent across steps rather than
+inventing a new name for the same concept each time.
+</output_contract>"""
         human_prompt = f"Context:\n{json.dumps(context, default=str, indent=2)}"
         with step_timer(run_id, "eda_agent", "decide_next_step"):
             try:
@@ -107,9 +163,10 @@ CRITICAL RULES:
 
     def execute_step(decision, iteration):
         output_path = os.path.join(_TMP_DIR, f"{run_id}_{iteration}_{uuid.uuid4().hex[:8]}.json")
-        with step_timer(run_id, "eda_agent", f"iteration_{iteration}", task_spec=decision.task_spec):
+        spec_text = decision.task_spec or "Perform exploratory data analysis."
+        with step_timer(run_id, "eda_agent", f"iteration_{iteration}", task_spec=spec_text):
             result = coder_agent(
-                task_spec=decision.task_spec,
+                task_spec=spec_text,
                 input_paths={"dataset": state["dataset_path"]},
                 output_path=output_path,
                 context={"profile": profile, "target_column": state.get("target_column")},
@@ -121,8 +178,8 @@ CRITICAL RULES:
             coder_records.append(result["private_memory_entry"])
         stdout_preview = (result["stdout"] or "").strip().splitlines()
         headline = stdout_preview[0][:160] if stdout_preview else ("failed" if not result["success"] else "no output")
-        condensed = f"iter {iteration}: {decision.task_spec[:100]} -> {headline}"
-        record = {"iteration": iteration, "task_spec": decision.task_spec, **result}
+        condensed = f"iter {iteration}: {spec_text[:100]} -> {headline}"
+        record = {"iteration": iteration, "task_spec": spec_text, **result}
         return {"condensed": condensed, "record": record}
 
     loop_result = run_exploration_loop(

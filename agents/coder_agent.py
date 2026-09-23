@@ -128,47 +128,63 @@ def coder_agent(
     pm = private_memory or (context.get("private_memories") if isinstance(context, dict) else None)
     memory_notes = format_coder_private_history(pm)
 
-    system_prompt = f"""You are the Coder sub-agent. Write a complete, self-contained Python
-script that accomplishes the task below. Read inputs from paths given in environment variables
-(INPUT_<KEY> per the input_paths keys, uppercased), write your result to the path in
-OUTPUT_PATH. Print concise findings to stdout. Do not hardcode a fixed technique — use
-whatever approach best fits the actual data characteristics given in the context below.
+    system_prompt = f"""You are the Coder sub-agent for a tabular-data ML pipeline. Write a
+complete, self-contained Python script that accomplishes the task below. Do not hardcode
+a fixed technique — choose whatever approach best fits the actual data characteristics
+given in the context.
 
-This dataset may be tabular, or a Kaggle-style table that references other modalities
-through its columns (check context["profile"]["features"][*]["modality"] if present):
-  - "numerical" / "categorical": handle with pandas/numpy/sklearn/scipy as usual.
-  - "free_text": a column of raw natural-language strings — use sklearn's text
-    vectorizers (TfidfVectorizer/CountVectorizer), or sentence-transformers/
-    transformers if installed, for embeddings or NLP features.
-  - "image_path": a column of file paths to images, relative to INPUT_DATASET_DIR if
-    not absolute — resolve with os.path.join(os.environ["INPUT_DATASET_DIR"], value)
-    when the value isn't already absolute. Use PIL/Pillow for basic stats, or
-    torchvision/timm for embeddings/models if installed.
-  - "audio_path": same path-resolution rule as image_path — use librosa/soundfile/
-    torchaudio if installed.
-  If a needed library isn't installed, prefer a simpler approach over failing (e.g.
-  fall back to file-size/duration-only stats for audio rather than crashing).
+<io_contract>
+- Read input files from `os.environ["INPUT_<KEY>"]` per the input_paths keys listed
+  below (e.g. `INPUT_DATASET`).
+- To load a dataset from `INPUT_DATASET`: check the file extension:
+  if path ends with `.parquet`, use `pd.read_parquet(path)`.
+  if path ends with `.csv`, use `pd.read_csv(path)` (with encoding fallback if needed).
+- Inspect column dtypes/characteristics from context to decide preprocessing per column
+  (numeric vs categorical vs datetime vs high-cardinality string, etc.) — use
+  pandas/numpy/sklearn/scipy as appropriate.
+- Write your primary result to `os.environ["OUTPUT_PATH"]` using the format matching its
+  extension:
+  * For `.json`: use `json.dump(data, f, default=str, indent=2)` (use default=str so numpy int64/float64 serializes safely).
+  * For `.csv`: use `df.to_csv(path, index=False)`.
+  * For `.parquet`: use `df.to_parquet(path, index=False)`.
+- Ensure the parent output directory exists before writing:
+  `os.makedirs(os.path.dirname(os.path.abspath(os.environ["OUTPUT_PATH"])), exist_ok=True)`.
+</io_contract>
 
-Task:
-{task_spec}
+<hard_constraints priority="absolute">
+- NO visual plots, charts, or figures — no matplotlib/seaborn figures, no saved image
+  files. The pipeline is headless and downstream agents are text-only. If matplotlib is
+  imported by any third-party dependency, guard against a display crash by running
+  `import matplotlib; matplotlib.use('Agg')` before any plotting import happens.
+- Instead of visuals, compute and print detailed numerical summaries to stdout:
+  correlation matrices, missing-value tables, distribution/skewness metrics, etc. as
+  relevant to the task.
+- Set random seeds (e.g. `random_state=42` / `np.random.seed(...)`) wherever
+  stochasticity is involved, so results are reproducible across retries.
+</hard_constraints>
 
-Rules:
-- Read input files from `os.environ["INPUT_<KEY>"]` (e.g. `INPUT_DATASET`).
-- Do NOT generate visual plots, charts, or figures (no matplotlib/seaborn figures or image files). The pipeline is headless and the LLM cannot view images. Instead, compute and print detailed numerical summaries, correlation matrices, missing value tables, and distribution metrics directly to stdout, and write structured output (JSON/Parquet/CSV) to `OUTPUT_PATH`.
-- If matplotlib is imported by any third-party dependency, ALWAYS ensure headless operation: `import matplotlib; matplotlib.use('Agg')` BEFORE importing any plotting modules.
-- Write your primary result to `os.environ["OUTPUT_PATH"]` using the matching file format (e.g. `json.dump` if `.json`, `to_csv` if `.csv`, `to_parquet` if `.parquet`).
-- Ensure parent output directories exist: `os.makedirs(os.path.dirname(os.path.abspath(os.environ["OUTPUT_PATH"])), exist_ok=True)`.
-- Print concise findings and summary lines to stdout.{memory_notes}
-
-Context (profile/state relevant to this task):
-{json.dumps(context, default=str, indent=2)}
-
-Input paths available: {list(input_paths.keys())}
+{memory_notes}
 
 Output ONLY the Python code, no markdown fences, no commentary."""
 
+    human_prompt = f"""Please write the complete executable Python script for the following task:
+
+<task>
+{task_spec}
+</task>
+
+<context>
+{json.dumps(context, default=str, indent=2)}
+</context>
+
+<input_paths_available>
+{list(input_paths.keys())}
+</input_paths_available>
+
+Output only the executable Python script."""
+
     log_key = run_id or "coder_agent_unscoped"
-    messages = [SystemMessage(content=system_prompt)]
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
     code, result = "", {"stdout": ""}
 
     from tools.tracer import compute_error_signature

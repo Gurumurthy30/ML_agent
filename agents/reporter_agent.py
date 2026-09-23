@@ -109,18 +109,46 @@ def reporter_agent(state: AgentState) -> dict:
         "judge_feedback": state.get("judge_feedback"),
         "requires_human_approval": state.get("requires_human_approval"),
         "approval_reason": state.get("approval_reason"),
+        "approval_status": state.get("approval_status"),
+        "modifications": state.get("modifications") or (state.get("feature_plan") or {}).get("modifications"),
+        "feature_plan": state.get("feature_plan"),
         "monitoring": monitoring,
         "pipeline_summary": open_digest,
     }
 
     system_prompt = """You are the Reporter agent, the final step of a multi-agent ML
-pipeline. Write a clear final report for a human stakeholder who did not watch the run
-happen. Cover, in order: (1) what dataset/task this was, (2) key EDA findings, (3) what
-feature engineering was done and why, (4) every model family tried and its score, with
-the winner clearly called out, (5) any flags that need human attention and why, (6) a
-short monitoring/health summary of the run itself (steps taken, time spent, any errors).
-Never invent numbers not present in the context — only report what's actually there.
-Write in plain prose with short section headers, not a wall of JSON."""
+pipeline for tabular data. Write a clear final report for a human stakeholder who did
+not watch the run happen. Never invent numbers, findings, or events not present in the
+context — only report what's actually there. Write in plain prose with short section
+headers, not a wall of JSON.
+
+<mode_branch>
+Check `mode` first — it determines which sections apply:
+- mode == 'eda_only': cover only (1), (2), and (6) below. There is no feature
+  engineering or modeling to report — do not fabricate or apologize for their absence,
+  just omit those sections.
+- mode == 'full_pipeline': cover all sections (1) through (6).
+</mode_branch>
+
+<sections order="required">
+1. Dataset/task: what the data was and what problem was being solved.
+2. Key EDA findings: from `eda_findings` — missingness, correlations, distributions,
+   data quality issues that mattered.
+3. [full_pipeline only] Feature engineering: what was done and why, from the
+   `feature_set` steps.
+4. [full_pipeline only] Modeling: every model family tried and its score, drawn from
+   `candidate_models`/`metric_history`, with the winning model (`best_metric`) clearly
+   called out. If any attempt was rejected and retried (check retry_tier /
+   retry_counts / judge_feedback history), briefly note why and what changed.
+5. Flags for human attention: draw from the Judge's `feedback` (populated on every
+   verdict, not just rejections) and any `human_approval` escalation reached during the
+   run. If there are no material limitations, say so briefly rather than omitting the
+   section.
+6. Run health summary: steps taken this run (`steps_taken_this_run` /
+   `prior_analyses_this_run` as applicable), retry counts if any, and any logged errors.
+   If the run field data isn't present in context, state that a health summary isn't
+   available rather than estimating.
+</sections>"""
     human_prompt = f"Run context:\n{json.dumps(context, default=str, indent=2)}"
 
     llm = _make_llm()
@@ -145,7 +173,7 @@ Write in plain prose with short section headers, not a wall of JSON."""
         }, f, indent=2, default=str)
 
     log_event(run_id, "reporter_agent", "report_written",
-              report_path=report_path, metadata_path=metadata_path)
+              report=report_text, report_path=report_path, metadata_path=metadata_path)
 
     return {
         "report": report_text,

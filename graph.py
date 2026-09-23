@@ -14,7 +14,13 @@ from typing import Optional
 from langgraph.graph import StateGraph, END
 from langgraph.types import interrupt
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.sqlite import SqliteSaver
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+except ImportError:
+    try:
+        from langgraph_checkpoint_sqlite import SqliteSaver
+    except ImportError:
+        SqliteSaver = None
 
 from state import AgentState
 from agents.supervisor import graph_node_supervisor
@@ -28,11 +34,15 @@ from tools.logger import log_event
 
 DEFAULT_CHECKPOINTS_PATH = os.path.join(os.environ.get("PIPELINE_RUNS_DIR", "runs"), "checkpoints.db")
 _CHECKPOINTER_LOCK = threading.Lock()
-_DEFAULT_SAVER: Optional[SqliteSaver] = None
+_DEFAULT_SAVER: Optional[object] = None
 
 
-def get_default_checkpointer(db_path: Optional[str] = None) -> SqliteSaver:
+def get_default_checkpointer(db_path: Optional[str] = None):
     global _DEFAULT_SAVER
+    if SqliteSaver is None:
+        if _DEFAULT_SAVER is None:
+            _DEFAULT_SAVER = MemorySaver()
+        return _DEFAULT_SAVER
     if db_path is None:
         db_path = DEFAULT_CHECKPOINTS_PATH
     with _CHECKPOINTER_LOCK:
@@ -60,9 +70,13 @@ def human_approval_node(state: AgentState) -> dict:
         "feature_plan": state.get("feature_plan"),
     })
 
-    log_event(run_id, "human_approval", "resumed", decision=decision)
     approval_status = decision.get("approval_status")
     modifications = decision.get("modifications")
+    log_event(run_id, "human_approval", "resumed",
+              decision=approval_status,
+              approval_status=approval_status,
+              modifications=modifications,
+              decision_payload=decision)
     update = {
         "approval_status": approval_status,
         "modifications": modifications,

@@ -53,7 +53,8 @@ def compute_agent_fingerprint(agent_name: str, state: AgentState) -> str:
             for c in candidates
         ]
         h.update(json.dumps(cand_sig, sort_keys=True).encode("utf-8"))
-        feedback = str(state.get("judge_feedback") or "")
+        fb = state.get("judge_feedback")
+        feedback = str(fb[-1] if isinstance(fb, list) and fb else (fb or ""))
         h.update(feedback.encode("utf-8"))
 
     elif agent_name in ("features", "features_agent"):
@@ -63,7 +64,8 @@ def compute_agent_fingerprint(agent_name: str, state: AgentState) -> str:
         h.update(json.dumps(feature_steps, sort_keys=True, default=str).encode("utf-8"))
         quality_flags = (state.get("profile") or {}).get("data_quality_flags") or []
         h.update(json.dumps(quality_flags, sort_keys=True, default=str).encode("utf-8"))
-        feedback = str(state.get("judge_feedback") or "")
+        fb = state.get("judge_feedback")
+        feedback = str(fb[-1] if isinstance(fb, list) and fb else (fb or ""))
         h.update(feedback.encode("utf-8"))
 
     return h.hexdigest()[:16]
@@ -126,6 +128,14 @@ def _determine_fallback_next_agent(state: AgentState) -> SupervisorDecision:
             task_instructions="Generate feature engineering code and produce transformed dataset.",
         )
     if not candidate_models:
+        if state.get("last_executed_agent") == "modeler":
+            return SupervisorDecision(
+                next_agent="human_approval",
+                requires_human_approval=True,
+                approval_reason="no_viable_candidate_models",
+                reasoning="Modeler completed its exploration loop but produced no viable candidate models. Human review required to avoid infinite looping.",
+                task_instructions="Review dataset, model parameters, and target column before proceeding.",
+            )
         return SupervisorDecision(
             next_agent="modeler",
             reasoning="Features ready; train and evaluate baseline candidate models.",
@@ -209,6 +219,12 @@ def _validate_and_override_decision(
     last_verdict = state.get("last_verdict")
     retry_counts = state.get("retry_counts") or {}
     metric_history = state.get("metric_history") or []
+
+    if decision.next_agent == "modeler" and state.get("last_executed_agent") == "modeler" and not (state.get("candidate_models") or []):
+        logger.warning(
+            "Supervisor LLM tried to loop to modeler after modeler produced 0 candidate models; overriding to human_approval"
+        )
+        return _determine_fallback_next_agent(state)
 
     if last_verdict != "reject":
         return decision  # No cap to enforce outside a reject cycle
@@ -432,27 +448,50 @@ def graph_node_supervisor(state: AgentState) -> dict:
 
     llm = _make_llm(temperature=0)
 
-    system_prompt = """You are the Supervisor node in a multi-agent ML pipeline. You route to
-the correct specialist agent based on the current progress in state:
+    system_prompt = """You are the Supervisor node in a multi-agent ML pipeline for tabular
+data. You do not perform analysis yourself — you inspect the current state and route to
+exactly one specialist agent, following the rules below in order. Stop at the first rule
+that matches.
 
-Pipeline Order:
-1. If `profile` is empty or missing -> route to 'profiler'.
-2. If `profile` is present and `eda_findings` is empty -> route to 'eda_agent'.
-3. If mode == 'eda_only' and `eda_findings` is present -> route to 'reporter'.
-4. If mode == 'full_pipeline':
-   - If `feature_set` is empty -> route to 'features'.
-   - If `feature_set` is present and `candidate_models` is empty -> route to 'modeler'.
-   - If `candidate_models` is present and `last_verdict` is empty -> route to 'judge'.
-   - If `last_verdict` == 'accept' -> route to 'reporter'.
-   - If `last_verdict` == 'reject':
-     * If candidate_models were just retrained -> route to 'judge' for evaluation!
-     * If retry_tier == 1 and retry count < 2 -> route to 'modeler' (retry_tier=1).
-     * If retry_tier == 2 and retry count < 2 -> route to 'features' (retry_tier=2).
-     * If retries >= 2 -> route to 'human_approval'.
+<state_fields_you_read>
+profile, eda_findings, mode, feature_set, candidate_models, last_verdict, retry_tier,
+retry_counts (dict keyed by tier, e.g. {1: n, 2: m}), needs_reevaluation (bool, set by
+modeler/features after a retry retrain, cleared by judge once evaluated)
+</state_fields_you_read>
 
-CRITICAL: If a stage (e.g. `profile`) is ALREADY populated in state, DO NOT route to that agent again! Advance to the next agent.
-CRITICAL: Do NOT route to the same agent at the same retry_tier if retry_counts[tier] >= 2.
-Respond with a single structured decision, not prose."""
+<routing_rules order="evaluate_top_to_bottom_stop_at_first_match">
+1. `profile` empty/missing -> route to 'profiler'.
+2. `profile` present AND `eda_findings` empty -> route to 'eda_agent'.
+3. mode == 'eda_only' AND `eda_findings` present -> route to 'reporter'.
+4. mode == 'full_pipeline':
+   a. `feature_set` empty -> route to 'features'.
+   b. `feature_set` present AND `candidate_models` empty -> route to 'modeler'.
+   c. `needs_reevaluation` == true -> route to 'judge'.
+   d. `candidate_models` present AND `last_verdict` empty -> route to 'judge'.
+   e. `last_verdict` == 'accept' -> route to 'reporter'.
+   f. `last_verdict` == 'reject':
+      - retry_tier == 1 AND retry_counts[1] < 2 -> route to 'modeler', retry_tier=1.
+      - retry_tier == 2 AND retry_counts[2] < 2 -> route to 'features', retry_tier=2.
+      - otherwise (both tiers exhausted) -> route to 'human_approval'.
+   g. Anything else under full_pipeline that matches none of the above -> route to
+      'human_approval' rather than guessing.
+5. mode is anything other than 'eda_only' or 'full_pipeline' -> route to 'human_approval'.
+</routing_rules>
+
+<invariants>
+- Never route to an agent whose corresponding stage is already populated in state,
+  UNLESS a retry rule (4f) explicitly calls for revisiting it.
+- Never route to the same agent at the same retry_tier once retry_counts[tier] >= 2 —
+  escalate tier or go to human_approval instead.
+- retry_tier is set by the judge agent based on its diagnosis of the rejection
+  (tier 1 = model-level issue, tier 2 = feature-level issue). You only read it, never
+  infer or invent it yourself.
+</invariants>
+
+<output_format>
+Respond with a single structured decision only, no prose:
+{"next_agent": "<agent_name>", "retry_tier": <int_or_null>, "reason": "<one short phrase citing the matched rule>"}
+</output_format>"""
 
     from utils.scoped_memory import format_open_memory_digest
     open_digest = format_open_memory_digest(state.get("open_summary_memory"), state=state)

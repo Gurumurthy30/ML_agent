@@ -14,6 +14,13 @@ export interface PipelineEvent {
   intent?: string;
   decision?: string;
   reason?: string;
+  feedback?: string;
+  judge_feedback?: string;
+  rejected_family?: string;
+  modifications?: string;
+  report?: string;
+  task_spec?: string;
+  step?: string;
   metric_value?: number;
   cv_score?: number;
   metric_delta?: number;

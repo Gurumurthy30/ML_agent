@@ -31,6 +31,8 @@ export interface PipelineRun {
   duration_s: number;
   error_count: number;
   is_baseline?: boolean | number;
+  report?: string;
+  report_path?: string;
   tags?: string[] | string;
   labels?: Record<string, string> | string;
   meta_json?: string;

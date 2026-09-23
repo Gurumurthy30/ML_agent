@@ -225,4 +225,80 @@ describe('Tabs Smoke Tests', () => {
       expect(screen.getByText('Original (Source)')).toBeInTheDocument();
     });
   });
+
+  it('renders FeaturePlanTab with acknowledged operator modifications', () => {
+    const eventsWithMod: PipelineEvent[] = [
+      ...mockEvents,
+      {
+        seq: 6,
+        run_id: 'test_run_smoke_123',
+        ts: '2026-09-21T10:05:00Z',
+        agent: 'features_agent',
+        event_type: 'operator_modification_acknowledged',
+        modifications: 'Operator requested: do not drop column col_x and use robust scaler',
+      },
+    ];
+    render(<FeaturePlanTab events={eventsWithMod} />);
+    expect(screen.getByText('Acknowledged Operator Instructions')).toBeInTheDocument();
+    expect(
+      screen.getByText('Operator requested: do not drop column col_x and use robust scaler')
+    ).toBeInTheDocument();
+  });
+
+  it('renders JudgeTab with rejected_family badge in evaluation history and latest verdict', () => {
+    const eventsWithJudgeReject: PipelineEvent[] = [
+      {
+        seq: 1,
+        run_id: 'test_run_smoke_123',
+        ts: '2026-09-21T10:01:00Z',
+        agent: 'judge_agent',
+        decision: 'reject',
+        rejected_family: 'DecisionTree',
+        reason: 'Overfitting severely on training folds',
+        feedback: 'Try ensemble models like RandomForest or XGBoost instead',
+        tier: 1,
+      },
+      {
+        seq: 2,
+        run_id: 'test_run_smoke_123',
+        ts: '2026-09-21T10:02:00Z',
+        agent: 'judge_agent',
+        decision: 'accept',
+        rejected_family: undefined,
+        reason: 'RandomForest achieved target metric',
+        feedback: 'Accepted candidate model',
+      },
+    ];
+    render(<JudgeTab events={eventsWithJudgeReject} />);
+    expect(screen.getByText('Evaluation History (2 rounds)')).toBeInTheDocument();
+    expect(screen.getByText('Rejected: DecisionTree')).toBeInTheDocument();
+  });
+
+  it('renders ReportTab with persisted run.report and report_path', () => {
+    const runWithReport: PipelineRun = {
+      ...mockRun,
+      report: '# Persisted Final Report\nModel converged with excellent test scores.',
+      report_path: 'artifacts/run_123_report.md',
+    };
+    render(<ReportTab run={runWithReport} events={[]} />);
+    expect(screen.getByText(/Persisted Final Report/)).toBeInTheDocument();
+    expect(screen.getByText('artifacts/run_123_report.md')).toBeInTheDocument();
+  });
+
+  it('renders PipelineFlowTab with reject status and verdict summary', () => {
+    const eventsWithVerdict: PipelineEvent[] = [
+      {
+        seq: 1,
+        run_id: 'test_run_smoke_123',
+        ts: '2026-09-21T10:01:00Z',
+        agent: 'judge_agent',
+        event_type: 'verdict',
+        decision: 'reject',
+        reason: 'Score plateaued below safety threshold',
+      },
+    ];
+    render(<PipelineFlowTab events={eventsWithVerdict} isLive={false} status="stopped" />);
+    expect(screen.getByText('REJECT')).toBeInTheDocument();
+    expect(screen.getAllByText('Score plateaued below safety threshold').length).toBeGreaterThanOrEqual(1);
+  });
 });

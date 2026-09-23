@@ -166,67 +166,58 @@ def invoke_structured_robust(llm, schema: Type[T], messages: list, run_id: str =
     return res_final
 
 
-def stream_text(llm, messages, run_id: str = None, agent: str = "agent", echo: bool = True, on_token = None) -> str:
+def stream_text(
+    llm,
+    messages: list,
+    run_id: str = None,
+    agent: str = "agent",
+    on_token = None,
+    echo: bool = True,
+) -> str:
     """
-    Stream a plain-text completion from `llm`, printing tokens to stdout as they
-    arrive (live generation instead of a blocking wait for the full response), and
-    returning the fully concatenated text once the stream ends.
-
-    Falls back to a single blocking `.invoke()` if streaming isn't supported by the
-    underlying model/transport for some reason.
+    Direct, robust text completion from `llm` (streaming removed per user request for reliable execution).
     """
     logger = get_logger(run_id) if run_id else None
-    chunks = []
-    total_usage = None
     try:
-        if echo:
-            try:
-                sys.stdout.buffer.write(f"\n--- {agent} (streaming) ---\n".encode("utf-8", errors="replace"))
-                sys.stdout.buffer.flush()
-            except Exception:
-                pass
-        for chunk in llm.stream(messages):
-            if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-                total_usage = chunk.usage_metadata
-            piece = getattr(chunk, "content", None) or (chunk if isinstance(chunk, str) else "")
-            if piece:
-                chunks.append(piece)
-                if echo:
-                    try:
-                        sys.stdout.buffer.write(piece.encode("utf-8", errors="replace"))
-                        sys.stdout.buffer.flush()
-                    except Exception:
-                        pass
-                if on_token:
-                    try:
-                        on_token(piece)
-                    except Exception:
-                        pass
-                elif run_id:
-                    publish_to_subscribers(run_id, {
-                        "event": "token",
-                        "type": "token",
-                        "agent": agent,
-                        "text": piece,
-                        "run_id": run_id,
-                    })
-        if echo:
-            try:
-                sys.stdout.buffer.write(b"\n")
-                sys.stdout.buffer.flush()
-            except Exception:
-                pass
-        text = "".join(chunks)
-        if not text:
-            raise ValueError("stream produced no content")
+        if hasattr(llm, "invoke"):
+            response = llm.invoke(messages)
+            text = response.content if hasattr(response, "content") else str(response)
+            if isinstance(text, list):
+                text = "".join(str(part.get("text", part) if isinstance(part, dict) else part) for part in text)
+            text = str(text or "")
+            total_usage = getattr(response, "usage_metadata", None)
+        elif hasattr(llm, "stream"):
+            chunks = []
+            for chunk in llm.stream(messages):
+                piece = getattr(chunk, "content", None) or (chunk if isinstance(chunk, str) else "")
+                if piece:
+                    chunks.append(piece)
+            text = "".join(chunks)
+            total_usage = None
+        else:
+            text = str(llm(messages))
+            total_usage = None
         _record_tokens(messages, text, run_id, agent, total_usage=total_usage)
     except Exception as exc:
         if logger:
-            logger.warning("%s: streaming failed (%s), falling back to invoke()", agent, exc)
-        response = llm.invoke(messages)
-        text = response.content
-        _record_tokens(messages, text, run_id, agent, total_usage=getattr(response, "usage_metadata", None))
+            logger.error("%s: LLM invocation failed: %s", agent, exc)
+        raise
+
+    if echo and text:
+        try:
+            sys.stdout.buffer.write(f"\n--- {agent} ---\n".encode("utf-8", errors="replace"))
+            sys.stdout.buffer.write(text.encode("utf-8", errors="replace"))
+            sys.stdout.buffer.write(b"\n")
+            sys.stdout.buffer.flush()
+        except Exception:
+            pass
+
+    if on_token and text:
+        try:
+            on_token(text)
+        except Exception:
+            pass
 
     if logger:
-        logger.debug("%s: streamed %d chars", agent, len(text))
+        logger.debug("%s: generated %d chars", agent, len(text))
     return text

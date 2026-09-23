@@ -46,6 +46,7 @@ from tools.tracer import (
     get_run_events,
     get_run_attempts,
     get_run_errors,
+    get_run_iterations,
     update_run_status,
     get_run_control,
     compare_runs,
@@ -131,10 +132,14 @@ def _execute_graph_worker(graph, stream_input, config: Dict[str, Any], run_id: s
             )
         else:
             best_score = None
+            report = None
+            report_path = None
             if state and hasattr(state, "values") and isinstance(state.values, dict):
-                best_score = state.values.get("best_score")
+                best_score = state.values.get("best_metric") if state.values.get("best_metric") is not None else state.values.get("best_score")
+                report = state.values.get("report")
+                report_path = state.values.get("artifact_path")
             log.info("Run %s completed successfully. Best score: %s", run_id, best_score)
-            update_run_status(run_id, status="completed", best_score=best_score)
+            update_run_status(run_id, status="completed", best_score=best_score, report=report, report_path=report_path)
     except Exception as exc:
         log.exception("Run %s failed with exception: %s", run_id, exc)
         update_run_status(run_id, status="failed", stop_reason=str(exc))
@@ -348,6 +353,19 @@ def get_pipeline_run_errors(run_id: str):
     if not run:
         raise HTTPException(status_code=404, detail=f"Run not found: '{run_id}'")
     return get_run_errors(run_id)
+
+
+@app.get("/runs/{run_id}/iterations")
+def get_pipeline_run_iterations(run_id: str, agent: str = "modeler_agent"):
+    """
+    Retrieve all code-execution iterations for a given agent (default: modeler_agent).
+    Includes both successful (scored) and failed attempts with full code, stdout, stderr.
+    Used by the All Code & Results tab to show every execution try.
+    """
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run not found: '{run_id}'")
+    return get_run_iterations(run_id, agent=agent)
 
 
 @app.get("/runs/{run_id}/dataset-preview")

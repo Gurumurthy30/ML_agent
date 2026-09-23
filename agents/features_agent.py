@@ -79,6 +79,11 @@ def features_agent(state: AgentState) -> dict:
     # Mutated by execute_step (closure); read by the code after the loop finishes.
     hard_block_info = {"triggered": False, "reason": None, "plan": None}
 
+    modifications = state.get("modifications") or (state.get("feature_plan") or {}).get("modifications")
+    if modifications:
+        log_event(run_id, "features_agent", "operator_modification_acknowledged",
+                  modifications=modifications)
+
     def decide_next_step(condensed_history):
         context = {
             "profile": profile,
@@ -93,36 +98,83 @@ def features_agent(state: AgentState) -> dict:
         if modifications:
             context["human_modifications"] = modifications
 
+        judge_fb = state.get("judge_feedback")
+        latest_judge_feedback = (
+            judge_fb[-1] if isinstance(judge_fb, list) and judge_fb else str(judge_fb or "")
+        ).strip()
+
         retry_note = ""
         if is_retry:
-            retry_note = (f"\nThis is a retry (tier 2): the Judge rejected the previous "
-                          f"feature set. Feedback: {state.get('judge_feedback')}. "
-                          f"Address that feedback rather than repeating the same approach.")
+            retry_note = (
+                f"\n\n<retry_context>\n"
+                f"This is a RETRY (tier 2). The Judge rejected the previous feature set.\n"
+                f"Judge feedback: {latest_judge_feedback}\n"
+                f"Address ONLY this feedback. Do not re-run or repeat prior steps from scratch.\n"
+                f"</retry_context>"
+            )
 
         modify_note = ""
         if modifications:
-            modify_note = (f"\nHuman operator reviewed the previous feature proposal and requested modifications: "
-                           f"\"{modifications}\". "
-                           f"You MUST strictly follow these operator modification instructions in your next step.")
+            modify_note = (
+                f"\n\n<operator_instructions priority=\"overrides_default_order\">\n"
+                f"Human operator reviewed the previous feature proposal and requested modifications:\n"
+                f"\"{modifications}\"\n"
+                f"Follow these instructions exactly in your next step. They take precedence "
+                f"over the default priority order below if the two conflict.\n"
+                f"</operator_instructions>"
+            )
 
-        system_prompt = ("You are the Features agent. Decide the next feature-engineering "
-                         "step, building on the CURRENT transformed dataset (not raw). "
-                         "Carefully review `eda_narrative` and `eda_findings` for high/low correlation "
-                         "pairs, missing values, skewness, and outliers. Prioritize: "
-                         "1) Handling missing values and imputation identified in EDA. "
-                         "2) Resolving multicollinearity (dropping or combining highly correlated features |r| > 0.7). "
-                         "3) Transforming skewed numerical distributions (log1p/Box-Cox). "
-                         "4) Encoding categorical columns. "
-                         "STOP as soon as the key issues identified in EDA are addressed — "
-                         "do NOT keep engineering after the primary issues are resolved. "
-                         "Check steps_taken_this_run carefully — do NOT repeat a transformation "
-                         "that already appears there. If this is a tier-2 retry, address ONLY "
-                         "the specific judge feedback cited and stop immediately after — do not "
-                         "re-run all prior steps from scratch. "
-                         "Self-report honestly if a step could irreversibly lose "
-                         "information. Stop once the feature set is ready for modeling."
-                         + retry_note
-                         + modify_note)
+        target_col = state.get("target_column")
+        target_rule = ""
+        if target_col:
+            target_rule = (
+                f"\n\n<invariants>\n"
+                f"- Never drop, rename, or alter the dtype/cardinality of the target column '{target_col}'.\n"
+                f"- Every transformation applies to predictor columns only; '{target_col}' passes "
+                f"through unchanged in the output dataframe.\n"
+                f"- Never use '{target_col}' to derive or encode another feature (target leakage) "
+                f"outside of a leakage-safe scheme (e.g. out-of-fold target encoding).\n"
+                f"</invariants>"
+            )
+
+        system_prompt = (
+            "You are the Features agent for a tabular-data ML pipeline. Decide the SINGLE next "
+            "feature-engineering step, building on the CURRENT transformed dataset (not the raw one).\n\n"
+
+            "<inputs_to_review>\n"
+            "Review `eda_narrative` and `eda_findings` for: missing values, high/low correlation "
+            "pairs, skewed distributions, outliers, and high-cardinality or mixed-type categoricals.\n"
+            "</inputs_to_review>\n\n"
+
+            "<priority_order>\n"
+            "1. Missing values — apply the imputation strategy EDA identified (mean/median for "
+            "numeric, mode/constant for categorical; use a 'missing' indicator flag if missingness "
+            "itself looks informative).\n"
+            "2. Multicollinearity — for numeric pairs with |r| > 0.7, drop or combine, keeping the "
+            "one with stronger target relationship or fewer missing values.\n"
+            "3. Skewed numeric distributions — log1p for strictly positive skewed columns; "
+            "Yeo-Johnson (not Box-Cox) if the column contains zero or negative values.\n"
+            "4. Categorical encoding — choose by cardinality: one-hot for low cardinality "
+            "(roughly <10 categories), frequency or ordinal encoding for higher cardinality. "
+            "If target encoding is used, it MUST be computed in a leakage-safe way "
+            "(e.g. out-of-fold / cross-fitted), never fit on the full dataset at once.\n"
+            "</priority_order>\n\n"
+
+            "<stopping_rule>\n"
+            "Stop as soon as the key issues identified in EDA are addressed — do not keep "
+            "engineering once the primary issues are resolved. Check `steps_taken_this_run` and "
+            "never repeat a transformation that already appears there.\n"
+            "</stopping_rule>\n\n"
+
+            "<honesty>\n"
+            "Flag explicitly, before proposing it, any step that could irreversibly lose "
+            "information — e.g. dropping a column, coarse binning, aggressive outlier clipping — "
+            "and explain the tradeoff.\n"
+            "</honesty>"
+            + target_rule
+            + retry_note
+            + modify_note
+        )
         human_prompt = f"Context:\n{json.dumps(context, default=str, indent=2)}"
         with step_timer(run_id, "features_agent", "decide_next_step"):
             try:
@@ -149,12 +201,18 @@ def features_agent(state: AgentState) -> dict:
     def execute_step(decision, iteration):
         nonlocal current_path
         output_path = os.path.join(_TMP_DIR, f"{run_id}_{iteration}.parquet")
+        spec_text = decision.task_spec or "Transform and engineer features."
+        is_cur_parquet = current_path.lower().endswith(".parquet")
+        loader_hint = "using pd.read_parquet" if is_cur_parquet else "using pd.read_csv"
+        coder_spec = (
+            f"{spec_text} (Load input dataset from INPUT_DATASET {loader_hint}. "
+            "Write the resulting transformed dataframe to OUTPUT_PATH using pandas to_parquet, "
+            "preserving all rows that should be kept.)"
+        )
         with step_timer(run_id, "features_agent", f"iteration_{iteration}",
-                        task_spec=decision.task_spec):
+                        task_spec=spec_text):
             result = coder_agent(
-                task_spec=decision.task_spec + " Write the resulting dataframe to "
-                          "OUTPUT_PATH using pandas to_parquet, preserving all rows "
-                          "that should be kept.",
+                task_spec=coder_spec,
                 input_paths={"dataset": current_path},
                 output_path=output_path,
                 context={"profile": profile, "target_column": state.get("target_column")},
@@ -167,13 +225,26 @@ def features_agent(state: AgentState) -> dict:
 
         diff_info = {}
         structural_destructive = False
+        target_col = state.get("target_column")
         if result["success"]:
             try:
                 before_df, after_df = _load_df(current_path), _load_df(result["output_path"])
-                cols_removed = sorted(set(before_df.columns) - set(after_df.columns))
-                row_delta = len(after_df) - len(before_df)
-                structural_destructive = bool(cols_removed) or row_delta != 0
-                diff_info = {"dropped_columns": cols_removed, "row_delta": row_delta}
+                # Hard invariant: target_column must not be missing
+                if target_col and target_col not in after_df.columns:
+                    logger.warning("features_agent: step dropped target_column '%s'! Reverting step.", target_col)
+                    log_event(run_id, "features_agent", "target_column_dropped",
+                              target_column=target_col, iteration=iteration)
+                    result["success"] = False
+                    result["stderr"] = (result.get("stderr") or "") + f"\nError: target_column '{target_col}' was removed from the dataset."
+                else:
+                    cols_removed = sorted(set(before_df.columns) - set(after_df.columns))
+                    row_delta = len(after_df) - len(before_df)
+                    structural_destructive = bool(cols_removed) or row_delta != 0
+                    diff_info = {
+                        "dropped_columns": cols_removed,
+                        "row_delta": row_delta,
+                        "row_count_delta": row_delta,
+                    }
             except Exception as exc:
                 logger.warning("features_agent: structural diff failed: %s", exc)
                 diff_info = {"error": str(exc)}
@@ -183,26 +254,28 @@ def features_agent(state: AgentState) -> dict:
         needs_approval = result["success"] and (guided or is_destructive)
 
         record = {
-            "iteration": iteration, "task_spec": decision.task_spec, **result,
+            "iteration": iteration, "task_spec": spec_text, **result,
             "structural_diff": diff_info,
             "destructive_self_assessment": decision.destructive_self_assessment,
         }
         stdout_preview = (result["stdout"] or "").strip().splitlines()
         headline = stdout_preview[0][:120] if stdout_preview else ("failed" if not result["success"] else "ok")
-        condensed = f"iter {iteration}: {decision.task_spec[:100]} -> {headline}"
+        condensed = f"iter {iteration}: {spec_text[:100]} -> {headline}"
 
         if needs_approval:
             hard_block_info["triggered"] = True
             hard_block_info["reason"] = "guided_mode" if (guided and not is_destructive) else "destructive_action"
             hard_block_info["plan"] = {
                 "code": result["code"],
-                "description": decision.task_spec,
+                "description": spec_text,
                 "destructive_self_assessment": decision.destructive_self_assessment,
                 "structural_diff": diff_info,
                 "proposed_output_path": result["output_path"],
+                "modifications": modifications,
             }
             log_event(run_id, "features_agent", "hard_block",
-                      reason=hard_block_info["reason"], diff=diff_info)
+                      reason=hard_block_info["reason"], diff=diff_info,
+                      plan=hard_block_info["plan"], feature_plan=hard_block_info["plan"])
             return {"condensed": condensed, "record": record, "hard_block": True}
 
         if result["success"]:
@@ -220,6 +293,8 @@ def features_agent(state: AgentState) -> dict:
         "converged": loop_result["exit_reason"] == "llm_stop",
         "exit_reason": loop_result["exit_reason"],
         "steps": loop_result["condensed_history"],
+        "operator_acknowledged": bool(modifications),
+        "modifications": modifications,
     }
 
     update = {

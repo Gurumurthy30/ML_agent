@@ -280,6 +280,19 @@ def run_migrations():
                         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
                         (5, "adaptive_controller_persistence", datetime.now(timezone.utc).isoformat())
                     )
+
+                # Migration 6: Add report and report_path columns to runs table
+                if 6 not in applied:
+                    cur = conn.execute("PRAGMA table_info(runs)")
+                    existing_cols = {row["name"] for row in cur.fetchall()}
+                    if "report" not in existing_cols:
+                        conn.execute("ALTER TABLE runs ADD COLUMN report TEXT DEFAULT NULL;")
+                    if "report_path" not in existing_cols:
+                        conn.execute("ALTER TABLE runs ADD COLUMN report_path TEXT DEFAULT NULL;")
+                    conn.execute(
+                        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                        (6, "report_storage", datetime.now(timezone.utc).isoformat())
+                    )
         finally:
             conn.close()
 
@@ -351,17 +364,19 @@ def _legacy_events_path(run_id: str) -> str:
 SQLITE_PAYLOAD_MAX_STR_LEN = 2048
 
 
-def _truncate_for_sqlite(val: Any, max_len: int = SQLITE_PAYLOAD_MAX_STR_LEN) -> Any:
+def _truncate_for_sqlite(val: Any, max_len: int = SQLITE_PAYLOAD_MAX_STR_LEN, key: Optional[str] = None) -> Any:
     """Truncate large text payloads (code, stdout, stderr, prompt) for compact SQLite storage,
-    leaving the full content in the JSONL files on disk."""
+    leaving the full content in the JSONL files on disk. Excludes report, feedback, and notes."""
+    if key in ("report", "feedback", "judge_feedback", "retry_note", "modify_note", "decision_payload"):
+        return val
     if isinstance(val, str):
         if len(val) > max_len:
             return val[:max_len] + f"... [TRUNCATED {len(val) - max_len} chars in SQLite index; full payload in JSONL]"
         return val
     elif isinstance(val, dict):
-        return {k: _truncate_for_sqlite(v, max_len=max_len) for k, v in val.items()}
+        return {k: _truncate_for_sqlite(v, max_len=max_len, key=k) for k, v in val.items()}
     elif isinstance(val, list):
-        return [_truncate_for_sqlite(v, max_len=max_len) for v in val]
+        return [_truncate_for_sqlite(v, max_len=max_len, key=key) for v in val]
     return val
 
 
@@ -426,6 +441,14 @@ def record_event(
     # Clean numbers
     c_metric_val = to_float(metric_value, default=None)
     c_metric_delta = to_float(metric_delta, default=None)
+
+    # Normalize synonym fields across layers
+    if decision is None and "verdict" in extra_payload:
+        decision = extra_payload["verdict"]
+    if tier is None and "retry_tier" in extra_payload:
+        tier = extra_payload["retry_tier"]
+    if reason is None and "reasoning" in extra_payload:
+        reason = extra_payload["reasoning"]
 
     # Error signature computation
     err_sig = None
@@ -716,6 +739,8 @@ def update_run_status(
     stop_reason: Optional[str] = None,
     best_score: Optional[float] = None,
     duration_s: Optional[float] = None,
+    report: Optional[str] = None,
+    report_path: Optional[str] = None,
 ):
     """Update lifecycle status and termination reason of a run."""
     now = datetime.now(timezone.utc).isoformat()
@@ -730,10 +755,12 @@ def update_run_status(
                         stop_reason = COALESCE(?, stop_reason),
                         best_score = COALESCE(?, best_score),
                         duration_s = COALESCE(?, duration_s),
+                        report = COALESCE(?, report),
+                        report_path = COALESCE(?, report_path),
                         updated_at = ?
                     WHERE run_id = ?
                     """,
-                    (status, stop_reason, best_score, duration_s, now, run_id),
+                    (status, stop_reason, best_score, duration_s, report, report_path, now, run_id),
                 )
         finally:
             conn.close()
@@ -873,12 +900,16 @@ def _compute_run_attempts(run_id: str) -> List[Dict[str, Any]]:
             continue
 
         evt = ev.get("event") or ev.get("type")
-        if evt in ("attempt_result", "model_evaluated", "candidate_evaluated") or (
-            ev.get("agent") == "coder_agent" and "cv_score" in ev
-        ):
-            if ev.get("agent") == "coder_agent" and "cv_score" not in ev and not ev.get("model_family") and not ev.get("model_name"):
+        # Accept attempt_result (modeler success/fail), model_evaluated, candidate_evaluated,
+        # and coder events that carry a cv_score.
+        is_modeler_attempt = evt in ("attempt_result", "modeler_iteration", "model_evaluated", "candidate_evaluated")
+        is_coder_scored = ev.get("agent") == "coder_agent" and "cv_score" in ev
+
+        if is_modeler_attempt or is_coder_scored:
+            if ev.get("agent") == "coder_agent" and not ev.get("model_family") and not ev.get("model_name"):
                 continue
-            val = to_float(ev.get("cv_score") or ev.get("metric_value"))
+            # Modeler emits `score` (not `cv_score`) on success; fall back to cv_score/metric_value for other sources
+            val = to_float(ev.get("score") or ev.get("cv_score") or ev.get("metric_value"))
             if baseline is None and val is not None:
                 baseline = val
 
@@ -889,7 +920,8 @@ def _compute_run_attempts(run_id: str) -> List[Dict[str, Any]]:
                 "attempt": ev.get("attempt", len(attempts) + 1),
                 "tier": ev.get("tier", 1),
                 "agent": ev.get("agent"),
-                "model_name": ev.get("model_name") or ev.get("model_type") or "Unknown Model",
+                # modeler emits model_family; fall back to model_name/model_type for other agents
+                "model_name": ev.get("model_family") or ev.get("model_name") or ev.get("model_type") or "Unknown Model",
                 "cv_score": val,
                 "cv_score_str": f"{val:.4f}" if val is not None else "N/A",
                 "delta": delta,
@@ -902,6 +934,15 @@ def _compute_run_attempts(run_id: str) -> List[Dict[str, Any]]:
                 "has_error": bool(ev.get("error") or ev.get("stderr")),
                 "error_signature": ev.get("error_signature"),
                 "ts": ev.get("ts"),
+                # Extended fields for the All Code/Results tab
+                "code": ev.get("code"),
+                "stdout": ev.get("stdout"),
+                "stderr": ev.get("stderr"),
+                "iteration": ev.get("iteration"),
+                "success": ev.get("success", val is not None),
+                "failure_reason": ev.get("failure_reason"),
+                "metric_name": ev.get("metric_name") or ev.get("metric"),
+                "is_improvement": ev.get("is_improvement"),
             })
     return attempts
 
@@ -938,6 +979,58 @@ def get_run_attempts(run_id: str) -> List[Dict[str, Any]]:
         _ATTEMPTS_CACHE[run_id] = (curr_seq, attempts)
     _persist_materialized_cache(run_id, curr_seq, attempts=attempts)
     return attempts
+
+
+def get_run_iterations(run_id: str, agent: str = "modeler_agent") -> List[Dict[str, Any]]:
+    """
+    Return all iteration events for a given agent — including failed ones.
+    Used by the All Code & Results tab in the frontend, which needs every attempt
+    regardless of whether a score was produced.
+    """
+    events = get_run_events(run_id)
+    results = []
+    for ev in events:
+        ev_agent = ev.get("agent") or ""
+        ev_event = ev.get("event") or ev.get("type") or ""
+        ev_parent = ev.get("parent_agent") or ""
+
+        # Include direct attempt_result/modeler_iteration events AND coder sub-events
+        # parented to the target agent
+        is_agent_direct = ev_agent == agent and ev_event in (
+            "attempt_result", "modeler_iteration", "features_iteration", "iteration_result", "loop_decision"
+        )
+        is_coder_child = ev_parent == agent and ev_agent == "coder_agent"
+
+        if is_agent_direct or is_coder_child:
+            val = to_float(ev.get("score") or ev.get("cv_score") or ev.get("metric_value"))
+            results.append({
+                "seq": ev.get("seq"),
+                "ts": ev.get("ts"),
+                "agent": ev_agent,
+                "event_type": ev_event,
+                "iteration": ev.get("iteration") or ev.get("parent_iteration"),
+                "model_family": ev.get("model_family") or ev.get("model_name"),
+                "task_spec": ev.get("task_spec"),
+                "score": val,
+                "cv_score_str": f"{val:.4f}" if val is not None else "N/A",
+                "metric_name": ev.get("metric_name") or ev.get("metric"),
+                "is_improvement": ev.get("is_improvement"),
+                "success": ev.get("success", val is not None),
+                "failure_reason": ev.get("failure_reason") or ev.get("reason"),
+                "code": ev.get("code"),
+                "stdout": ev.get("stdout"),
+                "stderr": ev.get("stderr"),
+                "duration_ms": ev.get("duration_ms"),
+                "tier": ev.get("tier"),
+                "decision": ev.get("decision"),
+            })
+
+    # Sort by seq ascending so the thread is in execution order
+    results.sort(key=lambda x: x.get("seq") or 0)
+    return results
+
+
+
 
 
 def _compute_run_errors(run_id: str) -> List[Dict[str, Any]]:

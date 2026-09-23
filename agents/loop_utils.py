@@ -130,6 +130,10 @@ def run_exploration_loop(
             exit_reason = "hard_block"
             break
 
+        if step_result.get("should_exit"):
+            exit_reason = step_result.get("exit_reason", "aborted")
+            break
+
         if plateau_check and plateau_check(iteration):
             exit_reason = "plateau"
             break

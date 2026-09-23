@@ -51,14 +51,55 @@ class ModelStepDecision(BaseModel):
     reasoning: str
 
 
+import ast
+
+
 def _parse_result_line(stdout: str) -> Optional[dict]:
-    for line in (stdout or "").splitlines():
+    lines = (stdout or "").splitlines()
+    # 1. Search for RESULT_JSON: pattern
+    for line in lines:
         match = _RESULT_LINE_RE.search(line)
         if match:
+            text = match.group(1).strip()
             try:
-                return json.loads(match.group(1))
-            except json.JSONDecodeError:
-                continue
+                data = json.loads(text)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+            try:
+                data = ast.literal_eval(text)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+
+    # 2. Search for any JSON / dict line containing cv_score or model_family
+    for line in lines:
+        line_s = line.strip()
+        if (line_s.startswith("{") and line_s.endswith("}")) and ("cv_score" in line_s or "model_family" in line_s or "score" in line_s):
+            try:
+                data = json.loads(line_s)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+            try:
+                data = ast.literal_eval(line_s)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+
+    # 3. Fallback regex search for cv_score or common metric patterns in stdout
+    score_match = re.search(r"(?:cv_score|validation_score|score|accuracy|f1|rmse|auc)\s*[:=]\s*([0-9\.]+)", stdout or "", re.IGNORECASE)
+    if score_match:
+        try:
+            val = float(score_match.group(1))
+            return {"model_family": "CandidateModel", "cv_score": val, "metric": "score"}
+        except Exception:
+            pass
+
     return None
 
 
@@ -86,8 +127,15 @@ def modeler_agent(state: AgentState) -> dict:
 
     is_retry = state.get("retry_tier") == 1
     rejected_family = None
-    if is_retry and state.get("candidate_models"):
-        rejected_family = state["candidate_models"][-1].get("model_family")
+    if is_retry:
+        rejected_family = state.get("rejected_family")
+        if not rejected_family and state.get("candidate_models"):
+            rejected_family = state["candidate_models"][-1].get("model_family")
+
+    judge_fb = state.get("judge_feedback")
+    latest_judge_feedback = (
+        judge_fb[-1] if isinstance(judge_fb, list) and judge_fb else str(judge_fb or "")
+    ).strip()
 
     tried_families = [m.get("model_family") for m in (state.get("candidate_models") or [])]
     best_metric = state.get("best_metric")
@@ -95,12 +143,29 @@ def modeler_agent(state: AgentState) -> dict:
     private_trials = []
     coder_records = []
     best_snapshots = {}  # iteration -> best_metric-so-far, used by the plateau backstop
+    consecutive_failures = 0  # tracks iterations with no valid score (for no_viable_attempts exit)
 
     scorecard_text = format_modeler_scorecard(state.get("private_memories"), current_best=best_metric)
 
     log_event(run_id, "modeler_agent", "loop_start", ceiling=ceiling, retry_tier_1=is_retry,
               rejected_family=rejected_family, metric=metric_name, higher_is_better=higher_is_better,
               exec_timeout=exec_timeout)
+
+    retry_note = ""
+    if is_retry:
+        retry_note = (
+            f"\n\n<retry_context>\n"
+            f"This is a RETRY (tier 1). The Judge rejected the model family '{rejected_family}'.\n"
+            f"Do not retry that family.\n"
+            f"Judge feedback: {latest_judge_feedback}\n"
+            f"Address ONLY this feedback and stop as soon as it's addressed — do not "
+            f"re-explore other families from scratch.\n"
+            f"</retry_context>"
+        )
+        log_event(run_id, "modeler_agent", "retry_context",
+                  rejected_family=rejected_family,
+                  feedback=latest_judge_feedback,
+                  retry_note=retry_note.strip())
 
     def decide_next_step(condensed_history):
         context = {
@@ -113,35 +178,49 @@ def modeler_agent(state: AgentState) -> dict:
             "avoid_family": rejected_family,
             "private_scorecard_and_blunders": scorecard_text,
         }
-        retry_note = ""
-        if is_retry:
-            retry_note = (f"\nThis is a retry (tier 1): the Judge rejected the model family "
-                          f"'{rejected_family}'. Do not retry that family. "
-                          f"Feedback: {state.get('judge_feedback')}")
-        system_prompt = ("You are the Modeler agent. Decide the next model family to try. "
-                         "Never reuse a family already listed in already_tried_overall or "
-                         "already_tried_this_run. If profile.detected_modalities includes "
-                         "image_path/audio_path/free_text columns, the task_spec should tell "
-                         "the Coder to derive features/embeddings from those columns first "
-                         "(e.g. CNN/transfer-learning embeddings for images, TF-IDF or "
-                         "transformer embeddings for text, spectral features for audio) before "
-                         "fitting a model — pick whatever's appropriate given what's installed, "
-                         "don't assume a specific library is available without a fallback. "
-                         "Instruct the Coder to use cross-validation with internal "
-                         "hyperparameter search (e.g. GridSearchCV/RandomizedSearchCV) so "
-                         "tuning happens inside a single iteration — this is free tier-0 "
-                         "tuning and should never be surfaced as a separate retry. The Coder "
-                         "script MUST print a line of the exact form RESULT_JSON: "
-                         "{\"model_family\": <name>, \"cv_score\": <float>, \"metric\": <name>} "
-                         "before finishing. "
-                         "CRITICAL BLUNDER PREVENTION: Review your private scorecard and recorded mistakes above. "
-                         "DO NOT repeat failed hyperparameter choices, crashing architectures, or blunders from prior trials. "
-                         "STOP once you have tried 3+ model families and have a model you're "
-                         "confident recommending — do not explore indefinitely. "
-                         "Never reuse a family; if all reasonable families are tried, stop. "
-                         "If on a tier-1 retry, address only the specific judge feedback cited "
-                         "and stop as soon as that issue is addressed."
-                         + retry_note)
+
+        system_prompt = (
+            "You are the Modeler agent for a tabular-data ML pipeline. Decide the next model "
+            "family to try, given the current feature set.\n\n"
+
+            "<already_tried>\n"
+            "Never propose a family listed in `already_tried_overall` (tried in any prior run) "
+            "or `already_tried_this_run` (tried already in this run) — check both before deciding.\n"
+            "</already_tried>\n\n"
+
+            "<model_family_menu>\n"
+            "Choose a family appropriate to the data size, dimensionality, and problem type "
+            "(regression/classification), e.g.: linear/logistic regression (with L1/L2), tree "
+            "ensembles (Random Forest, Gradient Boosting, XGBoost/LightGBM/CatBoost), SVM, k-NN, "
+            "or a simple MLP for larger tabular sets. Prefer libraries actually installed in the "
+            "environment; if a preferred library (e.g. XGBoost/LightGBM) is unavailable, fall "
+            "back to the closest scikit-learn equivalent rather than failing the step.\n"
+            "</model_family_menu>\n\n"
+
+            "<tuning_instructions>\n"
+            "Instruct the Coder to use cross-validation with internal hyperparameter search "
+            "(GridSearchCV/RandomizedSearchCV or equivalent) so tuning happens inside this single "
+            "iteration. This is free tier-0 tuning and must never be surfaced as a separate retry.\n"
+            "</tuning_instructions>\n\n"
+
+            "<output_contract>\n"
+            "The Coder script MUST print a line of the exact form, before finishing:\n"
+            "RESULT_JSON: {\"model_family\": <name>, \"cv_score\": <float>, \"metric\": <name>}\n"
+            "</output_contract>\n\n"
+
+            "<blunder_prevention priority=\"critical\">\n"
+            "Review the private scorecard and recorded mistakes provided above, if any. Do not "
+            "repeat failed hyperparameter choices, crashing configurations, or other blunders "
+            "from prior trials.\n"
+            "</blunder_prevention>\n\n"
+
+            "<stopping_rule>\n"
+            "Stop once you have tried 3+ model families and have one you're confident "
+            "recommending, or once every reasonable family for this data has been exhausted — "
+            "whichever comes first. Do not explore indefinitely, and never reuse a family.\n"
+            "</stopping_rule>"
+            + retry_note
+        )
         human_prompt = f"Context:\n{json.dumps(context, default=str, indent=2)}"
         with step_timer(run_id, "modeler_agent", "decide_next_step"):
             try:
@@ -163,17 +242,65 @@ def modeler_agent(state: AgentState) -> dict:
                     reasoning="Candidate models evaluated; selecting best model."
                 )
 
+    def _normalize_family(spec: str) -> str:
+        s = (spec or "").lower()
+        if "xgboost" in s or "xgb" in s: return "xgboost"
+        if "lightgbm" in s or "lgb" in s: return "lightgbm"
+        if "catboost" in s: return "catboost"
+        if "random forest" in s or "randomforest" in s: return "randomforest"
+        if "extra trees" in s or "extratrees" in s: return "extratrees"
+        if "gradient boost" in s or "gradientboosting" in s: return "gradientboosting"
+        if "logistic" in s: return "logisticregression"
+        if "ridge" in s: return "ridge"
+        if "elasticnet" in s: return "elasticnet"
+        if "svm" in s or "svc" in s or "svr" in s: return "svm"
+        if "knn" in s or "neighbors" in s: return "kneighbors"
+        if "neural" in s or "mlp" in s: return "mlp"
+        return "custom"
+
     def execute_step(decision, iteration):
-        nonlocal best_metric
+        nonlocal best_metric, consecutive_failures
         output_path = os.path.join(_TMP_DIR, f"{run_id}_{iteration}.joblib")
+
+        # Repetition Guard: detect if the proposed family was already attempted
+        target_col = state.get("target_column")
+        proposed_fam = _normalize_family(decision.task_spec or "")
+        normalized_tried = [_normalize_family(f) for f in tried_families]
+        enhanced_spec = decision.task_spec or f"Train a {task_type} model"
+        if proposed_fam in normalized_tried and proposed_fam != "custom":
+            fallback_families = ["gradientboosting", "randomforest", "lightgbm", "logisticregression", "extratrees"]
+            untried = [f for f in fallback_families if f not in normalized_tried]
+            if untried:
+                alt_fam = untried[0]
+                enhanced_spec = f"Train an alternative {alt_fam} {task_type} model (since {proposed_fam} was already evaluated). Use 5-fold cross-validation."
+                logger.info("Modeler repetition guard: redirected from %s to %s", proposed_fam, alt_fam)
+
+        # Standardize robust data loading instructions for Coder
+        is_parquet = dataset_path.lower().endswith(".parquet")
+        loader_snippet = (
+            "pd.read_parquet(os.environ['INPUT_DATASET'])"
+            if is_parquet
+            else "pd.read_csv(os.environ['INPUT_DATASET']) (with fallback to encoding='latin1' or on_bad_lines='skip' if needed)"
+        )
+        data_instruction = (
+            f"Ensure robust data handling: load dataset from INPUT_DATASET using {loader_snippet}. "
+            f"Separate features X and target y using '{target_col}'. "
+            f"If classification and target is string/categorical, encode with LabelEncoder. "
+            f"Impute missing numeric values using SimpleImputer(strategy='median'). "
+            f"Evaluate using 5-fold cross-validation with metric '{metric_name}'. "
+            f"ALWAYS print a final line: import json; print('RESULT_JSON: ' + json.dumps({{'model_family': '<FamilyName>', 'cv_score': float(score), 'metric': '{metric_name}'}}))\n\n"
+        )
+        final_task_spec = f"{data_instruction}Task: {enhanced_spec}"
+
         with step_timer(run_id, "modeler_agent", f"iteration_{iteration}",
-                        task_spec=decision.task_spec):
+                        task_spec=final_task_spec):
             result = coder_agent(
-                task_spec=decision.task_spec,
+                task_spec=final_task_spec,
                 input_paths={"dataset": dataset_path},
                 output_path=output_path,
                 context={"profile": profile, "target_column": state.get("target_column"),
-                        "task_type": state.get("task_type"), "metric": metric_name},
+                        "task_type": state.get("task_type"), "metric": metric_name,
+                        "data_instruction": data_instruction},
                 run_id=run_id, timeout=exec_timeout,
                 parent_agent="modeler_agent", parent_iteration=iteration,
                 private_memory=state.get("private_memories"),
@@ -182,14 +309,19 @@ def modeler_agent(state: AgentState) -> dict:
             coder_records.append(result["private_memory_entry"])
 
         parsed = _parse_result_line(result["stdout"]) if result["success"] else None
-        record = {"iteration": iteration, "task_spec": decision.task_spec, **result,
+        record = {"iteration": iteration, "task_spec": final_task_spec, **result,
                    "parsed_result": parsed}
 
+        task_label = (decision.task_spec[:80] if decision.task_spec else enhanced_spec[:80])
+        fam_label = (decision.task_spec[:40] if decision.task_spec else (proposed_fam or "unknown"))
+
         if not result["success"] or not parsed or "cv_score" not in parsed:
+            consecutive_failures += 1
             best_snapshots[iteration] = best_metric
-            err_msg = result.get("stderr") or "Script failed or returned no RESULT_JSON line"
+            err_msg = result.get("stderr") or result.get("error") or "Script failed or returned no RESULT_JSON line"
+            failure_reason = "execution_error" if not result["success"] else "no_result_json"
             private_trials.append({
-                "model_family": decision.task_spec[:40] if decision.task_spec else "unknown",
+                "model_family": fam_label,
                 "metric_name": metric_name,
                 "score": None,
                 "metric_delta": None,
@@ -197,17 +329,45 @@ def modeler_agent(state: AgentState) -> dict:
                 "blunder_note": f"Execution crashed: {err_msg[:120]}",
                 "iteration": iteration,
             })
-            condensed = f"iter {iteration}: {decision.task_spec[:80]} -> failed/no parsable score"
+            condensed = f"iter {iteration}: {task_label} -> failed/no parsable score"
+            # Emit attempt_result even on failure so the UI shows every attempt
+            log_event(run_id, "modeler_agent", "attempt_result",
+                      attempt=result.get("attempts", 1),
+                      iteration=iteration,
+                      tier=state.get("retry_tier", 0),
+                      model_family=fam_label,
+                      score=None,
+                      metric_name=metric_name,
+                      metric_delta=None,
+                      is_improvement=False,
+                      higher_is_better=higher_is_better,
+                      decision="failed",
+                      reason=failure_reason,
+                      failure_reason=failure_reason,
+                      code=result.get("code", ""),
+                      stdout=result.get("stdout", ""),
+                      stderr=result.get("stderr", ""),
+                      success=False,
+                      parent_agent="modeler_agent",
+                      parent_iteration=iteration)
+
+            should_exit = consecutive_failures >= CONVERGENCE_PATIENCE
+            if should_exit:
+                log_event(run_id, "modeler_agent", "no_viable_attempts_exit",
+                          consecutive_failures=consecutive_failures, iteration=iteration)
             return {
                 "condensed": condensed, "record": record,
                 "metric": None, "metric_name": metric_name, "metric_delta": 0.0,
                 "is_improvement": False, "is_stall": True,
+                "should_exit": should_exit,
+                "exit_reason": "no_viable_attempts" if should_exit else None,
             }
 
         family = parsed.get("model_family", "unknown") if parsed else "unknown"
         score = to_float(parsed.get("cv_score")) if parsed else None
 
         if score is None:
+            consecutive_failures += 1
             best_snapshots[iteration] = best_metric
             log_event(run_id, "modeler_agent", "metric_unavailable",
                       iteration=iteration, family=family,
@@ -222,12 +382,19 @@ def modeler_agent(state: AgentState) -> dict:
                 "iteration": iteration,
             })
             condensed = f"iter {iteration}: {family} -> metric unavailable / execution failed"
+            should_exit = consecutive_failures >= CONVERGENCE_PATIENCE
+            if should_exit:
+                log_event(run_id, "modeler_agent", "no_viable_attempts_exit",
+                          consecutive_failures=consecutive_failures, iteration=iteration)
             return {
                 "condensed": condensed, "record": record,
                 "metric": None, "metric_name": metric_name, "metric_delta": 0.0,
                 "is_improvement": False, "is_stall": True,
+                "should_exit": should_exit,
+                "exit_reason": "no_viable_attempts" if should_exit else None,
             }
 
+        consecutive_failures = 0  # Reset on any valid finite score
         tried_families.append(family)
 
         prev_score = new_scores[-1] if new_scores else (state.get("metric_history") or [None])[-1]
@@ -323,7 +490,11 @@ def modeler_agent(state: AgentState) -> dict:
             "coder": coder_records,
         },
         "open_summary_memory": {
-            "modeler": f"Trained {len(new_candidates)} candidate models across families {list({c['model_family'] for c in new_candidates})}. Best {metric_name}: {best_metric if best_metric is not None else 'N/A'}. Exit: {loop_result['exit_reason']}."
+            "modeler": (
+                f"Trained {len(new_candidates)} candidate models across families {list({c.get('model_family', 'unknown') for c in new_candidates})}. Best {metric_name}: {best_metric if best_metric is not None else 'N/A'}. Exit: {loop_result['exit_reason']}."
+                if new_candidates
+                else f"Attempted {len(private_trials)} model iterations. No viable candidate models produced. Exit: {loop_result['exit_reason']}."
+            )
         },
         "run_memory": [f"[Modeler] {c}" for c in loop_result["condensed_history"]],
         "iteration": state.get("iteration", 0) + loop_result["iterations"],

@@ -38,6 +38,9 @@ class JudgeVerdict(BaseModel):
                     "problem (Modeler should try a different family). 2 = something "
                     "deeper — features/data — is the problem (Features should "
                     "re-engineer). Leave null on accept.")
+    rejected_family: Optional[str] = Field(
+        default=None,
+        description="Model family name rejected when retry_tier == 1, else null.")
     feedback: str = Field(
         description="Specific, actionable feedback for whichever agent retries next "
                     "(or a short note on why this was accepted).")
@@ -70,23 +73,47 @@ def judge_agent(state: AgentState) -> dict:
         "pipeline_summary": open_digest,
     }
 
-    system_prompt = """You are the Judge agent. Evaluate whether the current
-feature set + best model are good enough to hand off to the Reporter, using ONLY the
-numbers already computed in context (best_metric, metric_history, data quality flags
-inside profile, feature_set steps) — never invent or estimate numbers yourself.
+    system_prompt = """You are the Judge agent in a tabular-data ML pipeline. Evaluate
+whether the current feature set + best model are good enough to hand off to the
+Reporter, using ONLY numbers already computed in context (best_metric, metric_history,
+data quality flags inside profile, feature_set steps). Never invent, estimate, or
+recompute numbers yourself.
 
-Reject with retry_tier=1 if the features look reasonable but the model/score itself
-is the weak point (e.g. plausibly a better family exists, or metric_history shows the
-tried families plateaued early without trying enough diversity).
+<no_result_case priority="checked_first">
+If no candidate model exists, or none has a valid evaluation metric (e.g. the Coder
+crashed before producing a result), this is always a reject with retry_tier=1,
+regardless of retry history.
+</no_result_case>
 
-Reject with retry_tier=2 if the problem looks deeper than model choice — e.g.
-data_quality_flags in profile suggest leakage or an unaddressed quality issue,
-feature_set converged without touching a flagged issue, or the best_metric is
-implausibly high (leakage) or low (something wrong upstream) for the task_type.
+<convergence_policy>
+This pipeline is designed to converge efficiently, not chase marginal gains
+indefinitely. Accept if best_metric and the feature set represent a defensible, working
+baseline for this task. If a candidate model exists with a valid evaluation metric,
+strongly prefer accept over reject. If this is already a retry iteration
+(retry_tier > 0, i.e. retry_counts[retry_tier] > 0), do NOT reject again unless there is
+catastrophic, fatal failure — prefer accept and document limitations in feedback for
+the Reporter instead.
+</convergence_policy>
 
-Accept if the best_metric and feature set look like a defensible result for this task
-and data, without demanding perfection — this pipeline is meant to converge, not loop
-forever chasing marginal gains."""
+<reject_criteria>
+- retry_tier=1 (model-level issue): model evaluation genuinely crashed, OR only an
+  inadequate single baseline was attempted when clearly better alternatives were
+  readily available and untried.
+- retry_tier=2 (feature-level issue): verified target leakage, or critical dataset
+  corruption traceable to the feature engineering step.
+Do not reject for any reason outside these two categories — marginal metric
+improvement potential is NOT sufficient grounds for rejection.
+</reject_criteria>
+
+<output_contract>
+Respond with a single structured decision:
+{
+  "verdict": "accept" | "reject",
+  "retry_tier": <1 | 2 | null>,           // null when verdict is "accept"
+  "rejected_family": <model_family_name | null>,  // required when retry_tier == 1, else null
+  "feedback": "<always populated — limitations/notes on accept, specific actionable issue on reject>"
+}
+</output_contract>"""
 
     human_prompt = f"Context:\n{json.dumps(context, default=str, indent=2)}"
 
@@ -108,15 +135,24 @@ forever chasing marginal gains."""
             reasoning="Pipeline converged with acceptable baseline validation performance."
         )
 
-    log_event(run_id, "judge_agent", "verdict", verdict=verdict.verdict,
-              retry_tier=verdict.retry_tier, reasoning=verdict.reasoning,
-              feedback=verdict.feedback)
+    cand_models = state.get("candidate_models") or []
+    best_cand = cand_models[-1] if cand_models else {}
+    rejected_fam = None
+    if verdict.verdict == "reject" and verdict.retry_tier == 1:
+        rejected_fam = getattr(verdict, "rejected_family", None) or best_cand.get("model_family") or "unknown"
+
+    log_event(run_id, "judge_agent", "verdict",
+              decision=verdict.verdict, tier=verdict.retry_tier,
+              reason=verdict.reasoning, feedback=verdict.feedback,
+              verdict=verdict.verdict, retry_tier=verdict.retry_tier,
+              reasoning=verdict.reasoning, rejected_family=rejected_fam)
     logger.info("Judge -> %s%s", verdict.verdict,
                 f" (retry_tier={verdict.retry_tier})" if verdict.verdict == "reject" else "")
 
     update = {
         "last_verdict": verdict.verdict,
-        "judge_feedback": verdict.feedback,
+        "judge_feedback": [verdict.feedback],
+        "rejected_family": rejected_fam,
         "open_summary_memory": {
             "judge": f"Verdict: {verdict.verdict}. Feedback: {verdict.feedback[:250]}"
         },
@@ -141,7 +177,7 @@ forever chasing marginal gains."""
             run_id=run_id,
             phase="judge",
             tier=verdict.retry_tier or 1,
-            idea_summary=f"Model: {best_cand.get('model_family', 'unknown')} with score {state.get('best_metric')}",
+            idea_summary=f"Model: {best_cand.get('model_family', 'unknown')} with score {state.get('best_metric') if state.get('best_metric') is not None else 'N/A'}",
             details={"feedback": verdict.feedback, "reasoning": verdict.reasoning},
             outcome="rejected" if verdict.verdict == "reject" else "accepted",
         )
