@@ -56,8 +56,12 @@ scratch/
 memory/store/*.jsonl
 smoke_data/
 
-# ─── Data files (uploaded datasets, exports, test CSVs) ───────────────────────
+# ─── Data files & Local Databases ─────────────────────────────────────────────
 data/
+projects/
+mlruns/
+mlflow.db*
+app_metadata.db*
 
 # ─── Frontend ─────────────────────────────────────────────────────────────────
 node_modules/

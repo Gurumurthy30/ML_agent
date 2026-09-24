@@ -1,0 +1,27 @@
+[project]
+name = "ml-agent"
+version = "0.1.0"
+description = "Autonomous Agentic Tabular ML Engineering Platform"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=0.3.0",
+    "langgraph>=0.2.0",
+    "langchain-ollama>=0.2.0",
+    "pydantic>=2.7.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "pyarrow>=14.0.0",
+    "scikit-learn>=1.4.0",
+    "mlflow>=2.12.0",
+    "python-dotenv>=1.0.0",
+    "click>=8.1.0",
+    "sqlalchemy>=2.0.0",
+    "sqlmodel>=0.0.14",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

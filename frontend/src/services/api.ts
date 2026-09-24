@@ -1,157 +1,131 @@
-import { PipelineRun, RunCreatePayload, ResumePayload, DatasetInspectResponse } from '../types/run';
-import { ModelAttempt, RunIteration } from '../types/attempt';
-import { ErrorGroup } from '../types/error';
+import {
+  Project,
+  Dataset,
+  WorkflowRun,
+  ArtifactIndex,
+  ArtifactContent,
+  DatasetPreview,
+  LeaderboardResponse,
+  EvaluationResponse,
+  ReportResponse,
+} from "../types";
 
-const API_BASE = '';
+const BASE_URL = "";
 
-export async function inspectDataset(payload: { dataset_path: string; target_column?: string }): Promise<DatasetInspectResponse> {
-  const res = await fetch(`${API_BASE}/datasets/inspect`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || `Failed to inspect dataset: ${res.status}`);
+    let errMsg = `Request failed: ${res.status} ${res.statusText}`;
+    try {
+      const errData = await res.json();
+      if (errData.detail) errMsg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+    } catch {
+      // ignore
+    }
+    throw new Error(errMsg);
   }
   return res.json();
 }
 
-export async function createRun(payload: RunCreatePayload): Promise<PipelineRun> {
-  const res = await fetch(`${API_BASE}/runs`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || `Failed to create run: ${res.status}`);
-  }
-  return res.json();
-}
+export const api = {
+  // Projects
+  async getProjects(): Promise<Project[]> {
+    const res = await fetch(`${BASE_URL}/projects`);
+    return handleResponse<Project[]>(res);
+  },
 
-export async function listRuns(filters?: { tag?: string; is_baseline?: boolean; limit?: number }): Promise<PipelineRun[]> {
-  const params = new URLSearchParams();
-  if (filters?.limit) params.set('limit', String(filters.limit));
-  if (filters?.tag) params.set('tag', filters.tag);
-  if (filters?.is_baseline !== undefined) params.set('is_baseline', String(filters.is_baseline));
+  async getProject(id: string): Promise<Project> {
+    const res = await fetch(`${BASE_URL}/projects/${id}`);
+    return handleResponse<Project>(res);
+  },
 
-  const qs = params.toString();
-  const url = `${API_BASE}/runs${qs ? `?${qs}` : ''}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to list runs: ${res.statusText}`);
-  }
-  return res.json();
-}
+  async createProject(data: { name: string; description?: string }): Promise<Project> {
+    const res = await fetch(`${BASE_URL}/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    return handleResponse<Project>(res);
+  },
 
-export async function getRun(runId: string): Promise<PipelineRun> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}`);
-  if (!res.ok) {
-    throw new Error(`Failed to get run ${runId}: ${res.statusText}`);
-  }
-  return res.json();
-}
+  // Datasets
+  async getDatasets(projectId: string): Promise<Dataset[]> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/datasets`);
+    return handleResponse<Dataset[]>(res);
+  },
 
-export async function getRunAttempts(runId: string): Promise<ModelAttempt[]> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/attempts`);
-  if (!res.ok) {
-    throw new Error(`Failed to get attempts for ${runId}: ${res.statusText}`);
-  }
-  return res.json();
-}
+  async uploadDataset(projectId: string, file: File): Promise<Dataset> {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/datasets`, {
+      method: "POST",
+      body: formData,
+    });
+    return handleResponse<Dataset>(res);
+  },
 
-export async function getRunErrors(runId: string): Promise<ErrorGroup[]> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/errors`);
-  if (!res.ok) {
-    throw new Error(`Failed to get errors for ${runId}: ${res.statusText}`);
-  }
-  return res.json();
-}
+  async previewDataset(projectId: string, version: string): Promise<DatasetPreview> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/datasets/${version}/preview`);
+    return handleResponse<DatasetPreview>(res);
+  },
 
-export async function getRunIterations(runId: string, agent: string = 'modeler_agent'): Promise<RunIteration[]> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/iterations?agent=${encodeURIComponent(agent)}`);
-  if (!res.ok) {
-    throw new Error(`Failed to get iterations for ${runId}: ${res.statusText}`);
-  }
-  return res.json();
-}
+  // Runs
+  async getRuns(projectId: string): Promise<WorkflowRun[]> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/runs`);
+    return handleResponse<WorkflowRun[]>(res);
+  },
 
-export async function resumeRun(runId: string, payload: ResumePayload): Promise<{ run_id: string; status: string; decision: string }> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/resume`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    const errorObj = new Error(err.detail || `Failed to resume run: ${res.status}`);
-    (errorObj as any).status = res.status;
-    throw errorObj;
-  }
-  return res.json();
-}
+  async getRun(projectId: string, runId: string): Promise<WorkflowRun> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/runs/${runId}`);
+    return handleResponse<WorkflowRun>(res);
+  },
 
-export async function pauseRun(runId: string): Promise<{ run_id: string; control: string }> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/pause`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Pause failed: ${res.statusText}`);
-  return res.json();
-}
+  async triggerRun(
+    projectId: string,
+    payload: {
+      target_column?: string;
+      target_metric?: string;
+      dataset_version?: string;
+      constraints?: Record<string, any>;
+    }
+  ): Promise<WorkflowRun> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return handleResponse<WorkflowRun>(res);
+  },
 
-export async function unpauseRun(runId: string): Promise<{ run_id: string; control: string }> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/unpause`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Unpause failed: ${res.statusText}`);
-  return res.json();
-}
+  // Artifacts
+  async getArtifacts(projectId: string): Promise<ArtifactIndex[]> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/artifacts`);
+    return handleResponse<ArtifactIndex[]>(res);
+  },
 
-export async function stopRun(runId: string): Promise<{ run_id: string; control: string }> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Stop failed: ${res.statusText}`);
-  return res.json();
-}
+  async getArtifactContent(projectId: string, artifactId: string): Promise<ArtifactContent> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/artifacts/${artifactId}/content`);
+    return handleResponse<ArtifactContent>(res);
+  },
 
-export async function escapeRun(runId: string): Promise<{ run_id: string; control: string }> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/escape`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Escape failed: ${res.statusText}`);
-  return res.json();
-}
+  // Models & Leaderboard
+  async getLeaderboard(projectId: string, metric: string = "f1"): Promise<LeaderboardResponse> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/models?metric=${encodeURIComponent(metric)}`);
+    return handleResponse<LeaderboardResponse>(res);
+  },
 
-export async function updateRunTags(runId: string, tags: string[]): Promise<PipelineRun> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/tags`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tags }),
-  });
-  if (!res.ok) throw new Error(`Update tags failed: ${res.statusText}`);
-  return res.json();
-}
+  async getExperiments(projectId: string): Promise<{ project_id: string; runs: any[] }> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/experiments`);
+    return handleResponse<{ project_id: string; runs: any[] }>(res);
+  },
 
-export async function setRunBaseline(runId: string, is_baseline: boolean, baseline_score?: number): Promise<PipelineRun> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/baseline`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ is_baseline, baseline_score }),
-  });
-  if (!res.ok) throw new Error(`Update baseline failed: ${res.statusText}`);
-  return res.json();
-}
+  // Evaluation & Report
+  async getEvaluation(projectId: string): Promise<EvaluationResponse> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/evaluation`);
+    return handleResponse<EvaluationResponse>(res);
+  },
 
-export async function compareRuns(runA: string, runB: string): Promise<any> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runA)}/compare/${encodeURIComponent(runB)}`);
-  if (!res.ok) throw new Error(`Compare failed: ${res.statusText}`);
-  return res.json();
-}
-
-export function getExportUrl(runId: string): string {
-  return `${API_BASE}/runs/${encodeURIComponent(runId)}/export`;
-}
-
-export async function getDatasetPreview(runId: string, limit: number = 50): Promise<import('../types/run').DatasetPreviewResponse> {
-  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/dataset-preview?limit=${limit}`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || `Failed to fetch dataset preview (${res.status})`);
-  }
-  return res.json();
-}
-
+  async getReport(projectId: string): Promise<ReportResponse> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/report`);
+    return handleResponse<ReportResponse>(res);
+  },
+};
