@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -7,14 +8,18 @@ import {
   Cpu,
   Clock,
   AlertTriangle,
+  Trash2,
 } from "lucide-react";
 import { api } from "../services/api";
 import { useUIStore } from "../store/uiStore";
 import { ProjectCreateModal } from "../components/modals/ProjectCreateModal";
+import { DeleteProjectModal } from "../components/modals/DeleteProjectModal";
+import { Project } from "../types";
 
 export function ProjectsPage() {
   const navigate = useNavigate();
   const { setIsCreateProjectOpen } = useUIStore();
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
 
   const {
     data: projects = [],
@@ -131,10 +136,23 @@ export function ProjectsPage() {
 
               <div className="pt-4 mt-4 border-t border-slate-800/80 flex items-center justify-between text-xs font-mono text-slate-500">
                 <span className="truncate max-w-[120px]">{p.id}</span>
-                <span className="flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  {new Date(p.created_at).toLocaleDateString()}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    {new Date(p.created_at).toLocaleDateString()}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setProjectToDelete(p);
+                    }}
+                    className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition"
+                    title="Delete project"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -142,6 +160,12 @@ export function ProjectsPage() {
       </main>
 
       <ProjectCreateModal onCreated={() => refetch()} />
+      <DeleteProjectModal
+        project={projectToDelete}
+        isOpen={Boolean(projectToDelete)}
+        onClose={() => setProjectToDelete(null)}
+        onDeleted={() => refetch()}
+      />
     </div>
   );
 }

@@ -14,6 +14,7 @@ import { LeaderboardView } from "../components/views/LeaderboardView";
 import { EvaluationView } from "../components/views/EvaluationView";
 import { ReportView } from "../components/views/ReportView";
 import { RunsView } from "../components/views/RunsView";
+import { CoderExecutionsView } from "../components/views/CoderExecutionsView";
 import { ArtifactViewerModal } from "../components/modals/ArtifactViewerModal";
 import { ModelDetailModal } from "../components/modals/ModelDetailModal";
 import { TriggerRunModal } from "../components/modals/TriggerRunModal";
@@ -34,6 +35,7 @@ export function WorkspacePage() {
     queryClient.invalidateQueries({ queryKey: ["datasets", projectId] });
     queryClient.invalidateQueries({ queryKey: ["runs", projectId] });
     queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["code-executions", projectId] });
     queryClient.invalidateQueries({ queryKey: ["leaderboard", projectId] });
     queryClient.invalidateQueries({ queryKey: ["evaluation", projectId] });
     queryClient.invalidateQueries({ queryKey: ["report", projectId] });
@@ -83,6 +85,14 @@ export function WorkspacePage() {
     enabled: Boolean(projectId),
   });
 
+  // 6. Fetch Code Executions (Coder Agent history)
+  const { data: codeExecutions = [] } = useQuery({
+    queryKey: ["code-executions", projectId],
+    queryFn: () => api.getCodeExecutions(projectId),
+    enabled: Boolean(projectId),
+    refetchInterval: 3000,
+  });
+
   // Auto-select latest run if none selected
   useEffect(() => {
     if (!activeRunId && runs.length > 0) {
@@ -122,6 +132,9 @@ export function WorkspacePage() {
         break;
       case "report":
         setActiveTab("report");
+        break;
+      case "coder":
+        setActiveTab("coder");
         break;
       default:
         setActiveTab("overview");
@@ -174,6 +187,7 @@ export function WorkspacePage() {
           runCount={runs.length}
           modelCount={leaderboardData?.leaderboard?.length || 0}
           datasetCount={datasets.length}
+          codeCount={codeExecutions.length}
         />
 
         {/* Center Main Panel */}
@@ -223,10 +237,16 @@ export function WorkspacePage() {
               onTriggerNewRun={() => setIsTriggerRunOpen(true)}
             />
           )}
+
+          {activeTab === "coder" && <CoderExecutionsView projectId={projectId} />}
         </main>
 
         {/* Right Artifacts Panel */}
-        <ArtifactsPanel artifacts={artifacts} isLoading={isArtifactsLoading} />
+        <ArtifactsPanel
+          projectId={projectId}
+          artifacts={artifacts}
+          isLoading={isArtifactsLoading}
+        />
       </div>
 
       {/* Modals */}

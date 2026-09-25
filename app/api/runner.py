@@ -284,24 +284,32 @@ def execute_workflow_sync(project_id: str, run_id: str, dataset_version: str, ta
             },
         )
 
-    except Exception as exc:
-        with Session(engine) as session:
-            run_record = session.get(WorkflowRun, run_id)
-            if run_record:
-                run_record.status = "FAILED"
-                run_record.error = str(exc)
-                run_record.completed_at = datetime.now(timezone.utc)
-                session.add(run_record)
-                session.commit()
+    except (Exception, KeyboardInterrupt, asyncio.CancelledError) as exc:
+        is_interrupted = isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError))
+        err_msg = "Workflow execution cancelled or interrupted" if is_interrupted else str(exc)
+        try:
+            with Session(engine) as session:
+                run_record = session.get(WorkflowRun, run_id)
+                if run_record:
+                    run_record.status = "FAILED"
+                    run_record.error = err_msg
+                    run_record.completed_at = datetime.now(timezone.utc)
+                    session.add(run_record)
+                    session.commit()
 
-        event_manager.emit_event(
-            project_id=project_id,
-            run_id=run_id,
-            event_type="WORKFLOW_COMPLETED",
-            stage="error",
-            message=f"Workflow run failed: {str(exc)}",
-            data={"status": "FAILED", "error": str(exc)},
-        )
+            event_manager.emit_event(
+                project_id=project_id,
+                run_id=run_id,
+                event_type="WORKFLOW_COMPLETED",
+                stage="error",
+                message=f"Workflow run terminated: {err_msg}",
+                data={"status": "FAILED", "error": err_msg},
+            )
+        except Exception:
+            pass
+
+        if is_interrupted:
+            raise exc
 
 
 async def execute_workflow_async(project_id: str, run_id: str, dataset_version: str, target_column: str | None, target_metric: str | None, constraints: dict | None = None) -> None:

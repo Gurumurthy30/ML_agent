@@ -8,6 +8,7 @@ import {
   FileText,
   History,
   Info,
+  Terminal,
 } from "lucide-react";
 import { cn as clsx } from "../../utils/cn";
 import { WorkspaceTab, useUIStore } from "../../store/uiStore";
@@ -23,9 +24,10 @@ interface ProjectNavProps {
   runCount?: number;
   modelCount?: number;
   datasetCount?: number;
+  codeCount?: number;
 }
 
-export function ProjectNav({ runCount, modelCount, datasetCount }: ProjectNavProps) {
+export function ProjectNav({ runCount, modelCount, datasetCount, codeCount }: ProjectNavProps) {
   const { activeTab, setActiveTab } = useUIStore();
 
   const navItems: NavItem[] = [
@@ -38,6 +40,7 @@ export function ProjectNav({ runCount, modelCount, datasetCount }: ProjectNavPro
     { key: "evaluation", label: "Evaluation", icon: CheckCircle2 },
     { key: "report", label: "Final Report", icon: FileText },
     { key: "runs", label: "Runs History", icon: History, badge: runCount },
+    { key: "coder", label: "Code Executed", icon: Terminal, badge: codeCount },
   ];
 
   return (

@@ -10,7 +10,8 @@ export type WorkspaceTab =
   | "models"
   | "evaluation"
   | "report"
-  | "runs";
+  | "runs"
+  | "coder";
 
 export interface UIState {
   activeTab: WorkspaceTab;

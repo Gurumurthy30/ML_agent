@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { FolderGit2, Play, PanelRightClose, PanelRightOpen, Cpu, RotateCw } from "lucide-react";
+import { FolderGit2, Play, PanelRightClose, PanelRightOpen, Cpu, RotateCw, Trash2 } from "lucide-react";
 import { useUIStore } from "../../store/uiStore";
 import { Project, WorkflowRun } from "../../types";
 import { StatusBadge } from "../common/Badge";
+import { DeleteProjectModal } from "../modals/DeleteProjectModal";
 
 interface HeaderProps {
   project?: Project;
@@ -14,6 +16,7 @@ interface HeaderProps {
 export function Header({ project, activeRun, onRefresh, isRefreshing }: HeaderProps) {
   const navigate = useNavigate();
   const { isArtifactsPanelOpen, toggleArtifactsPanel, setIsTriggerRunOpen } = useUIStore();
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
   return (
     <header className="h-14 border-b border-slate-800 bg-[#0b101b] px-4 flex items-center justify-between z-20 select-none">
@@ -80,15 +83,34 @@ export function Header({ project, activeRun, onRefresh, isRefreshing }: HeaderPr
         </button>
 
         {project && (
-          <button
-            onClick={toggleArtifactsPanel}
-            className="px-2.5 py-1.5 rounded-md border border-slate-800 hover:bg-slate-800/60 text-slate-300 text-xs transition"
-            title={isArtifactsPanelOpen ? "Hide Artifacts Panel" : "Show Artifacts Panel"}
-          >
-            {isArtifactsPanelOpen ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
-          </button>
+          <>
+            <button
+              onClick={() => setIsDeleteModalOpen(true)}
+              className="px-2.5 py-1.5 rounded-md border border-slate-800 hover:border-rose-500/50 hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 text-xs transition"
+              title="Delete Project"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+
+            <button
+              onClick={toggleArtifactsPanel}
+              className="px-2.5 py-1.5 rounded-md border border-slate-800 hover:bg-slate-800/60 text-slate-300 text-xs transition"
+              title={isArtifactsPanelOpen ? "Hide Artifacts Panel" : "Show Artifacts Panel"}
+            >
+              {isArtifactsPanelOpen ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+            </button>
+          </>
         )}
       </div>
+
+      {project && (
+        <DeleteProjectModal
+          project={project}
+          isOpen={isDeleteModalOpen}
+          onClose={() => setIsDeleteModalOpen(false)}
+          onDeleted={() => navigate("/")}
+        />
+      )}
     </header>
   );
 }

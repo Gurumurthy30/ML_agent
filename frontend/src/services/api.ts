@@ -8,6 +8,7 @@ import {
   LeaderboardResponse,
   EvaluationResponse,
   ReportResponse,
+  CodeExecution,
 } from "../types";
 
 const BASE_URL = "";
@@ -45,6 +46,18 @@ export const api = {
       body: JSON.stringify(data),
     });
     return handleResponse<Project>(res);
+  },
+
+  async deleteProject(id: string): Promise<{ status: string; message: string }> {
+    const res = await fetch(`${BASE_URL}/projects/${id}`, {
+      method: "DELETE",
+    });
+    return handleResponse<{ status: string; message: string }>(res);
+  },
+
+  async getCodeExecutions(projectId: string): Promise<CodeExecution[]> {
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/code-executions`);
+    return handleResponse<CodeExecution[]>(res);
   },
 
   // Datasets

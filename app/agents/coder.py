@@ -77,7 +77,15 @@ class CoderSubAgent:
             last_code = code
 
             # 2. Execute script
-            res = self.execution.run_script(code)
+            stage_name = context.get("stage", "coder") if isinstance(context, dict) else "coder"
+            run_id = context.get("run_id") if isinstance(context, dict) else None
+            res = self.execution.run_script(
+                code,
+                stage=stage_name,
+                run_id=run_id,
+                task_description=task_description,
+                attempt=attempt + 1,
+            )
 
             # Detect soft failures in execution output
             if res.success and "<MODEL_RESULTS>" in res.stdout:

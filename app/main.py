@@ -1,9 +1,25 @@
+import os
+import logging
+import warnings
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+
+# Suppress noisy deprecation and agent hint warnings from third-party libraries
+os.environ["MLFLOW_DISABLE_AGENT_HINT"] = "1"
+warnings.filterwarnings("ignore")
+
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from sqlalchemy.exc import SQLAlchemyError
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.config import validate_config
 from app.db.session import init_db
 from app.api.routes import router
+
+logger = logging.getLogger("uvicorn.error")
 
 
 @asynccontextmanager
@@ -36,9 +52,77 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# --- Exception Handlers ---
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Handles standard HTTPExceptions cleanly without leaking internal stack traces."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "status_code": exc.status_code,
+            "error": "HTTPException",
+            "detail": exc.detail,
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handles Pydantic request payload validation errors with informative messages."""
+    formatted_errors = []
+    for err in exc.errors():
+        loc = " -> ".join(str(item) for item in err.get("loc", []))
+        msg = err.get("msg", "")
+        formatted_errors.append(f"{loc}: {msg}" if loc else msg)
+
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "status_code": 422,
+            "error": "ValidationError",
+            "detail": formatted_errors or exc.errors(),
+        },
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
+    """Handles database exceptions safely and logs the traceback."""
+    logger.error(f"Database error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "status_code": 500,
+            "error": "DatabaseError",
+            "detail": "A database error occurred while processing the request.",
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    """Catch-all unhandled exception handler to return structured JSON and log tracebacks."""
+    logger.error(f"Unhandled error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "status_code": 500,
+            "error": "InternalServerError",
+            "detail": str(exc),
+        },
+    )
+
+
 app.include_router(router)
 
 
 @app.get("/")
 def health_check():
     return {"status": "ok", "message": "Autonomous Tabular ML Engineering API is running"}
+

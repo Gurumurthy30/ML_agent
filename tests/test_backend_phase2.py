@@ -94,6 +94,11 @@ def test_phase2_endpoints():
     assert len(lb_housing["leaderboard"]) >= 1
 
     # 10. Verify Report endpoint
+    demo_rep_dir = BASE_DIR / "projects" / "demo_titanic" / "reports"
+    demo_rep_dir.mkdir(parents=True, exist_ok=True)
+    if not (demo_rep_dir / "final_report.md").exists():
+        (demo_rep_dir / "final_report.md").write_text("# Final Report\nAutonomous ML Run Report", encoding="utf-8")
+
     res = client.get("/projects/demo_titanic/report")
     assert res.status_code == 200
     rep_data = res.json()

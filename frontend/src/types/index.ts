@@ -152,3 +152,21 @@ export interface ReportResponse {
   };
   markdown: string;
 }
+
+export interface CodeExecution {
+  id: string;
+  project_id: string;
+  run_id?: string;
+  stage: string;
+  script_name: string;
+  task_description?: string;
+  attempt?: number;
+  code: string;
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  success: boolean;
+  executed_at: string;
+  duration_ms?: number;
+}
+

@@ -90,8 +90,8 @@ Start the required services in separate terminal windows:
 # Terminal 1: MLflow Tracking Server
 mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
 
-# Terminal 2: FastAPI Backend Server
-uvicorn app.main:app --reload --port 8000
+# Terminal 2: FastAPI Backend Server (watch only app/ directory to avoid reloading on project/artifact generation)
+uvicorn app.main:app --reload --reload-dir app --port 8000
 
 # Terminal 3: React Frontend Dev Server
 cd frontend && npm run dev
