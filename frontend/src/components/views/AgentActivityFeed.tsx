@@ -1,18 +1,17 @@
 import { useState, useRef, useEffect } from "react";
 import {
-  CheckCircle2,
   AlertTriangle,
-  PlayCircle,
-  Cpu,
   ChevronDown,
   ChevronRight,
   Terminal,
   Activity,
-  ArrowRight,
-  Clock,
+  AlertCircle,
+  Cpu,
   RotateCcw,
+  CheckCircle2,
+  Clock,
 } from "lucide-react";
-import clsx from "clsx";
+import { cn as clsx } from "../../utils/cn";
 import { PipelineEvent, WorkflowRun } from "../../types";
 import { Badge, StatusBadge } from "../common/Badge";
 
@@ -21,6 +20,7 @@ interface AgentActivityFeedProps {
   activeRun?: WorkflowRun;
   isConnected: boolean;
   isCompleted: boolean;
+  error?: string | null;
   onSelectStage?: (stage: string) => void;
 }
 
@@ -29,6 +29,7 @@ export function AgentActivityFeed({
   activeRun,
   isConnected,
   isCompleted,
+  error,
   onSelectStage,
 }: AgentActivityFeedProps) {
   const [expandedEvents, setExpandedEvents] = useState<Record<string, boolean>>({});
@@ -134,6 +135,25 @@ export function AgentActivityFeed({
 
       {/* Center Event Stream */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {error && (
+          <div className="p-3 bg-rose-500/10 border border-rose-500/40 rounded-lg flex items-center gap-2.5 text-xs font-mono text-rose-300">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            <div className="flex-1">
+              <span className="font-semibold text-rose-200">Execution Alert:</span> {error}
+            </div>
+          </div>
+        )}
+
+        {activeRun?.status === "FAILED" && !error && (
+          <div className="p-3 bg-rose-500/10 border border-rose-500/40 rounded-lg flex items-center gap-2.5 text-xs font-mono text-rose-300">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            <div className="flex-1">
+              <span className="font-semibold text-rose-200">Run Failed:</span>{" "}
+              {activeRun.error || "The autonomous workflow failed."}
+            </div>
+          </div>
+        )}
+
         {events.length === 0 && (
           <div className="h-48 flex flex-col items-center justify-center text-slate-500 font-mono text-xs gap-2">
             <Terminal className="w-6 h-6 text-slate-600 animate-pulse" />

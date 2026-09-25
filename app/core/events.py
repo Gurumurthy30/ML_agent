@@ -14,6 +14,7 @@ class EventManager:
     def __init__(self):
         # Mapping: (project_id, run_id) -> list of asyncio.Queue
         self._subscribers: dict[tuple[str, str], list[asyncio.Queue]] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def emit_event(
         self,
@@ -55,12 +56,15 @@ class EventManager:
             "timestamp": now.isoformat(),
         }
 
-        # Fan-out to memory queues
+        # Fan-out to memory queues thread-safely
         key = (project_id, run_id)
         queues = self._subscribers.get(key, [])
         for q in list(queues):
             try:
-                q.put_nowait(event_dict)
+                if self._loop and self._loop.is_running():
+                    self._loop.call_soon_threadsafe(q.put_nowait, event_dict)
+                else:
+                    q.put_nowait(event_dict)
             except Exception:
                 pass
 
@@ -91,6 +95,11 @@ class EventManager:
 
     def subscribe(self, project_id: str, run_id: str) -> asyncio.Queue:
         """Registers a new SSE client subscriber queue."""
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
         q = asyncio.Queue()
         key = (project_id, run_id)
         if key not in self._subscribers:

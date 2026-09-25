@@ -9,7 +9,7 @@ import {
   History,
   Info,
 } from "lucide-react";
-import clsx from "clsx";
+import { cn as clsx } from "../../utils/cn";
 import { WorkspaceTab, useUIStore } from "../../store/uiStore";
 
 interface NavItem {

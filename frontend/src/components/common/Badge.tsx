@@ -1,5 +1,5 @@
 import React from "react";
-import clsx from "clsx";
+import { cn as clsx } from "../../utils/cn";
 
 interface BadgeProps {
   variant?: "success" | "running" | "warning" | "error" | "neutral" | "info" | "purple";

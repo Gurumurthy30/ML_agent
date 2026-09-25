@@ -128,4 +128,34 @@ export const api = {
     const res = await fetch(`${BASE_URL}/projects/${projectId}/report`);
     return handleResponse<ReportResponse>(res);
   },
+
+  // Kaggle Submission Predict
+  async predictModel(
+    projectId: string,
+    experimentId: string,
+    testFile: File,
+    idColumn?: string
+  ): Promise<string> {
+    const formData = new FormData();
+    formData.append("test_file", testFile);
+    if (idColumn && idColumn.trim()) {
+      formData.append("id_column", idColumn.trim());
+    }
+    const res = await fetch(`${BASE_URL}/projects/${projectId}/models/${experimentId}/predict`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      let errMsg = `Prediction failed (${res.status} ${res.statusText})`;
+      try {
+        const errJson = await res.json();
+        if (errJson.detail) errMsg = typeof errJson.detail === "string" ? errJson.detail : JSON.stringify(errJson.detail);
+      } catch {
+        // ignore
+      }
+      throw new Error(errMsg);
+    }
+    return res.text();
+  },
 };
+

@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { WorkspacePage } from "./pages/WorkspacePage";
 import { RunPage } from "./pages/RunPage";
+import { UIProvider } from "./store/uiStore";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -16,14 +17,16 @@ const queryClient = new QueryClient({
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <Router>
-        <Routes>
-          <Route path="/" element={<ProjectsPage />} />
-          <Route path="/projects/:id" element={<WorkspacePage />} />
-          <Route path="/projects/:id/runs/:runId" element={<RunPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Router>
+      <UIProvider>
+        <Router>
+          <Routes>
+            <Route path="/" element={<ProjectsPage />} />
+            <Route path="/projects/:id" element={<WorkspacePage />} />
+            <Route path="/projects/:id/runs/:runId" element={<RunPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Router>
+      </UIProvider>
     </QueryClientProvider>
   );
 }

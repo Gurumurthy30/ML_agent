@@ -94,16 +94,17 @@ export function ArtifactsPanel({ artifacts, isLoading }: ArtifactsPanelProps) {
               {!isCollapsed && (
                 <div className="p-1 space-y-0.5">
                   {items.map((art) => {
-                    const filename = art.file_path.split(/[\\/]/).pop() || art.id;
+                    const filePath = art.file_path || art.path || "";
+                    const filename = filePath.split(/[\\/]/).pop() || art.id;
                     return (
                       <button
                         key={art.id}
                         onClick={() => setViewingArtifact(art)}
                         className="w-full text-left px-2 py-1.5 rounded flex items-center justify-between gap-2 text-xs text-slate-300 hover:bg-slate-800/80 hover:text-sky-300 transition group"
-                        title={art.summary || art.file_path}
+                        title={art.summary || filePath}
                       >
                         <div className="flex items-center gap-2 min-w-0">
-                          {getFileIcon(art.file_path)}
+                          {getFileIcon(filePath)}
                           <span className="truncate font-mono text-[11px]">{filename}</span>
                         </div>
                         <ExternalLink className="w-3 h-3 text-slate-600 opacity-0 group-hover:opacity-100 flex-shrink-0" />

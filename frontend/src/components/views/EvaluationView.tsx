@@ -1,30 +1,23 @@
-import { useEffect, useState } from "react";
-import { CheckCircle2, AlertTriangle, XCircle, ArrowRight, ShieldCheck, HelpCircle } from "lucide-react";
-import clsx from "clsx";
-import { EvaluationResponse } from "../../types";
+import { useQuery } from "@tanstack/react-query";
+import { CheckCircle2, AlertTriangle, ArrowRight, ShieldCheck } from "lucide-react";
 import { api } from "../../services/api";
 import { Badge } from "../common/Badge";
+import { cn } from "../../utils/cn";
 
 interface EvaluationViewProps {
   projectId: string;
 }
 
 export function EvaluationView({ projectId }: EvaluationViewProps) {
-  const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setIsLoading(true);
-    api
-      .getEvaluation(projectId)
-      .then((data) => setEvaluation(data))
-      .catch((err) => {
-        setError(err.message);
-        setEvaluation(null);
-      })
-      .finally(() => setIsLoading(false));
-  }, [projectId]);
+  const {
+    data: evaluation,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ["evaluation", projectId],
+    queryFn: () => api.getEvaluation(projectId),
+    enabled: Boolean(projectId),
+  });
 
   if (isLoading) {
     return (
@@ -34,11 +27,24 @@ export function EvaluationView({ projectId }: EvaluationViewProps) {
     );
   }
 
-  if (!evaluation || !evaluation.json) {
+  if (error) {
+    return (
+      <div className="p-8 border border-rose-500/30 rounded-xl bg-rose-500/5 text-center space-y-2 m-6">
+        <AlertTriangle className="w-8 h-8 text-rose-400 mx-auto" />
+        <div className="text-xs text-rose-300 font-medium font-sans">Failed to load evaluation</div>
+        <div className="text-[11px] text-rose-400/80 font-mono">{(error as any)?.message}</div>
+      </div>
+    );
+  }
+
+  const evalJson = evaluation?.json || {};
+  const issues = evalJson.issues || [];
+
+  if (!evaluation || !evaluation.json || (!evalJson.verdict && issues.length === 0)) {
     return (
       <div className="p-12 text-center space-y-2">
         <CheckCircle2 className="w-8 h-8 text-slate-600 mx-auto" />
-        <div className="text-xs text-slate-400 font-medium">No evaluation records yet</div>
+        <div className="text-xs text-slate-400 font-medium font-sans">No evaluation records yet</div>
         <div className="text-[11px] text-slate-500 font-mono">
           Run the pipeline to trigger model validation against quality gates.
         </div>
@@ -46,11 +52,13 @@ export function EvaluationView({ projectId }: EvaluationViewProps) {
     );
   }
 
-  const evalJson = evaluation.json;
   const verdict = evalJson.verdict || "PASS";
-  const issues = evalJson.issues || [];
   const recommendations = evalJson.recommendations || [];
-  const decision = evalJson.decision || (verdict === "IMPROVE" ? "Route back to feature_engineering/model" : "Accept best model");
+  const decision =
+    evalJson.decision ||
+    (verdict === "IMPROVE"
+      ? "Route back to feature_engineering/model"
+      : "Accept best model");
 
   const getSeverityBadge = (sev: string) => {
     switch (sev?.toUpperCase()) {
@@ -71,7 +79,7 @@ export function EvaluationView({ projectId }: EvaluationViewProps) {
       <div>
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-5 h-5 text-sky-400" />
-          <h2 className="text-base font-bold text-slate-100">Evaluator & Quality Gates</h2>
+          <h2 className="text-base font-bold text-slate-100">Evaluator &amp; Quality Gates</h2>
         </div>
         <p className="text-xs text-slate-400 mt-1">
           Strict metric threshold checks, overfitting/underfitting detection, and loop routing verdicts.
@@ -80,7 +88,7 @@ export function EvaluationView({ projectId }: EvaluationViewProps) {
 
       {/* Verdict Card */}
       <div
-        className={clsx(
+        className={cn(
           "p-5 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-4 font-mono",
           verdict === "PASS"
             ? "bg-emerald-950/20 border-emerald-800/40"
@@ -88,96 +96,85 @@ export function EvaluationView({ projectId }: EvaluationViewProps) {
         )}
       >
         <div className="flex items-center gap-3">
-          {verdict === "PASS" ? (
-            <CheckCircle2 className="w-8 h-8 text-emerald-400 flex-shrink-0" />
-          ) : (
-            <AlertTriangle className="w-8 h-8 text-amber-400 flex-shrink-0" />
-          )}
-
+          <div
+            className={cn(
+              "w-10 h-10 rounded-lg flex items-center justify-center font-bold text-base font-sans",
+              verdict === "PASS"
+                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+            )}
+          >
+            {verdict}
+          </div>
           <div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-bold text-slate-100 uppercase tracking-wider">
-                Verdict: {verdict}
-              </span>
-              <span
-                className={clsx(
-                  "px-2 py-0.5 rounded text-[11px] font-bold font-sans",
-                  verdict === "PASS"
-                    ? "bg-emerald-500/20 text-emerald-300"
-                    : "bg-amber-500/20 text-amber-300"
-                )}
-              >
-                {verdict === "PASS" ? "QUALITY GATES PASSED" : "REFINEMENT REQUIRED"}
-              </span>
+            <div className="text-slate-100 font-bold font-sans text-sm">
+              Evaluator Verdict: {verdict}
             </div>
-            <div className="text-xs text-slate-300 font-sans mt-1">
-              Best candidate: <span className="font-mono text-sky-400 font-bold">{evalJson.best_candidate || "Candidate Model"}</span>
-            </div>
+            <div className="text-xs text-slate-400 mt-0.5">{decision}</div>
           </div>
         </div>
 
-        {/* Supervisor Routing */}
-        <div className="p-3 bg-black/40 border border-slate-800 rounded-lg text-xs space-y-1">
-          <div className="text-[10px] text-slate-500 uppercase font-semibold">
-            Supervisor Routing Decision
+        {evalJson.suggested_next_stage && (
+          <div className="flex items-center gap-2 text-xs bg-slate-900/80 px-3 py-2 rounded-lg border border-slate-700">
+            <span className="text-slate-400">Next Action:</span>
+            <span className="text-sky-400 font-bold uppercase">{evalJson.suggested_next_stage}</span>
+            <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
           </div>
-          <div className="flex items-center gap-1.5 text-purple-300 font-semibold">
-            <ArrowRight className="w-3.5 h-3.5" />
-            <span>{decision}</span>
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* Issues Table */}
+      {/* Identified Issues */}
       <div>
-        <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider font-mono mb-2">
-          Detected Quality Issues ({issues.length})
+        <h3 className="text-xs font-semibold text-slate-300 font-sans mb-3 flex items-center gap-2">
+          <span>Quality Gate Checks ({issues.length} Issues Flagged)</span>
         </h3>
-        <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-900/40">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead className="bg-slate-800/60 font-mono text-slate-400 border-b border-slate-800">
-              <tr>
-                <th className="p-3">Issue Type</th>
-                <th className="p-3 w-28">Severity</th>
-                <th className="p-3">Evidence / Metric Discrepancy</th>
-                <th className="p-3">Implication</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/80 font-mono">
-              {issues.map((iss, idx) => (
-                <tr key={idx} className="hover:bg-slate-800/30">
-                  <td className="p-3 font-semibold text-slate-200">{iss.type}</td>
-                  <td className="p-3">{getSeverityBadge(iss.severity)}</td>
-                  <td className="p-3 text-slate-300 font-sans">{iss.evidence}</td>
-                  <td className="p-3 text-slate-400 font-sans">{iss.implication || "—"}</td>
-                </tr>
-              ))}
-              {issues.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="p-6 text-center text-slate-500 font-sans">
-                    No critical degradation or overfitting issues detected.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+
+        {issues.length === 0 ? (
+          <div className="p-4 bg-emerald-950/10 border border-emerald-900/40 rounded-xl text-emerald-300 text-xs font-mono flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <span>All quality checks passed without warning.</span>
+          </div>
+        ) : (
+          <div className="space-y-3 font-mono text-xs">
+            {issues.map((issue: any, idx: number) => (
+              <div
+                key={idx}
+                className="p-4 border border-slate-800 rounded-xl bg-slate-900/40 space-y-2"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-200 font-sans">{issue.check_name}</span>
+                  {getSeverityBadge(issue.severity)}
+                </div>
+                <p className="text-slate-300 text-[11px] leading-relaxed">{issue.details}</p>
+                {issue.evidence && (
+                  <div className="p-2 bg-slate-950/60 rounded text-[10px] text-slate-400">
+                    <span className="text-slate-500 uppercase font-semibold">Evidence:</span>{" "}
+                    {issue.evidence}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Recommendations */}
       {recommendations.length > 0 && (
-        <div className="space-y-2">
-          <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider font-mono">
-            Evaluator Improvement Suggestions
+        <div>
+          <h3 className="text-xs font-semibold text-slate-300 font-sans mb-3">
+            Improvement Recommendations
           </h3>
-          <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2 text-xs">
-            {recommendations.map((rec, idx) => (
-              <div key={idx} className="flex items-start gap-2 text-slate-300">
-                <span className="text-sky-400 font-bold font-mono">0{idx + 1}.</span>
+          <ul className="space-y-2 font-mono text-xs">
+            {recommendations.map((rec: string, idx: number) => (
+              <li
+                key={idx}
+                className="p-3 bg-slate-900/40 border border-slate-800 rounded-lg flex items-start gap-2.5 text-slate-300"
+              >
+                <span className="text-sky-400 font-bold shrink-0">{idx + 1}.</span>
                 <span>{rec}</span>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         </div>
       )}
     </div>

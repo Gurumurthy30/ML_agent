@@ -6,7 +6,7 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 from app.db.session import engine
-from app.db.models import WorkflowRun, EDAFinding, FeatureVersion, SupervisorMemoryRecord
+from app.db.models import WorkflowRun, EDAFinding, FeatureVersion, SupervisorMemoryRecord, ArtifactIndex
 from app.core.events import event_manager
 from app.core.state import ProjectState, TaskType
 from app.core.model_router import ModelRouter
@@ -62,6 +62,14 @@ def execute_workflow_sync(project_id: str, run_id: str, dataset_version: str, ta
                 event_type="SUPERVISOR_DECISION",
                 stage="supervisor",
                 message="Target column is missing. Run paused in NEEDS_INPUT status.",
+                data={"status": "NEEDS_INPUT"},
+            )
+            event_manager.emit_event(
+                project_id=project_id,
+                run_id=run_id,
+                event_type="WORKFLOW_COMPLETED",
+                stage="supervisor",
+                message="Workflow paused: Needs target column input.",
                 data={"status": "NEEDS_INPUT"},
             )
             return
@@ -145,6 +153,14 @@ def execute_workflow_sync(project_id: str, run_id: str, dataset_version: str, ta
                                 message="Target column profile is ambiguous. Pausing for user input.",
                                 data={"status": "NEEDS_INPUT"},
                             )
+                            event_manager.emit_event(
+                                project_id=project_id,
+                                run_id=run_id,
+                                event_type="WORKFLOW_COMPLETED",
+                                stage="supervisor",
+                                message="Workflow paused: Ambiguous target column needs user input.",
+                                data={"status": "NEEDS_INPUT"},
+                            )
                             return
 
                     elif node_name == "model":
@@ -215,6 +231,31 @@ def execute_workflow_sync(project_id: str, run_id: str, dataset_version: str, ta
                     updated_at=datetime.now(timezone.utc),
                 )
                 session.merge(mem_rec)
+
+            # 5.5 Synchronize ArtifactIndex for created files
+            artifact_dirs = [
+                ("profile", PROJECTS_DIR / project_id / "profile"),
+                ("eda", PROJECTS_DIR / project_id / "eda"),
+                ("features", PROJECTS_DIR / project_id / "features"),
+                ("reports", PROJECTS_DIR / project_id / "reports"),
+            ]
+            for stage_name, stage_dir in artifact_dirs:
+                if stage_dir.exists():
+                    for f in stage_dir.rglob("*"):
+                        if f.is_file():
+                            art_id = f"art_{project_id}_{stage_name}_{f.name}"
+                            existing = session.get(ArtifactIndex, art_id)
+                            if not existing:
+                                art_rec = ArtifactIndex(
+                                    id=art_id,
+                                    project_id=project_id,
+                                    run_id=run_id,
+                                    artifact_type=stage_name,
+                                    path=str(f),
+                                    version=dataset_version,
+                                    created_at=datetime.now(timezone.utc).isoformat(),
+                                )
+                                session.add(art_rec)
 
             # 6. Update WorkflowRun record
             run_record = session.get(WorkflowRun, run_id)

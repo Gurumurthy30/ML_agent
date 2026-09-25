@@ -31,6 +31,16 @@ export function ProjectCreateModal({ onCreated }: { onCreated?: () => void }) {
       setError("Please select a tabular CSV dataset to upload.");
       return;
     }
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setError("Only tabular .csv files are supported.");
+      return;
+    }
+    if (startRunImmediately && !targetColumn.trim()) {
+      setError(
+        "Target column is required to start a run immediately. Please specify a target column or uncheck 'Start initial run immediately'."
+      );
+      return;
+    }
 
     setIsLoading(true);
     setError(null);

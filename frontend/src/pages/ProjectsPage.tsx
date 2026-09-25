@@ -1,15 +1,12 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   FolderGit2,
   Plus,
-  Layers,
   ArrowRight,
-  Database,
   Cpu,
   Clock,
-  Sparkles,
+  AlertTriangle,
 } from "lucide-react";
 import { api } from "../services/api";
 import { useUIStore } from "../store/uiStore";
@@ -19,7 +16,13 @@ export function ProjectsPage() {
   const navigate = useNavigate();
   const { setIsCreateProjectOpen } = useUIStore();
 
-  const { data: projects = [], isLoading, refetch } = useQuery({
+  const {
+    data: projects = [],
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ["projects"],
     queryFn: () => api.getProjects(),
   });
@@ -72,7 +75,23 @@ export function ProjectsPage() {
           </div>
         )}
 
-        {!isLoading && projects.length === 0 && (
+        {isError && (
+          <div className="p-8 border border-rose-500/30 rounded-2xl bg-rose-500/5 text-center space-y-3">
+            <AlertTriangle className="w-8 h-8 text-rose-400 mx-auto" />
+            <div className="text-sm font-semibold text-rose-200">Failed to load workspaces</div>
+            <p className="text-xs text-rose-300 font-mono">
+              {(error as any)?.message || "A network or server error occurred."}
+            </p>
+            <button
+              onClick={() => refetch()}
+              className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/40 text-xs font-semibold transition"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {!isLoading && !isError && projects.length === 0 && (
           <div className="p-12 border border-slate-800 rounded-2xl bg-slate-900/30 text-center space-y-3">
             <FolderGit2 className="w-10 h-10 text-slate-600 mx-auto" />
             <div className="text-sm font-semibold text-slate-200">No Projects Found</div>

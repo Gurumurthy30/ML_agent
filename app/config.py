@@ -25,3 +25,20 @@ MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
 LANGSMITH_TRACING = os.getenv("LANGSMITH_TRACING", "false").lower() == "true"
 LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY", "")
 LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "ML_agent")
+
+
+def validate_config() -> None:
+    """Fails fast with clear descriptive messages if required configuration is missing or invalid."""
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL environment variable must be set (e.g. sqlite:///app_metadata.db)")
+
+    # If pointing to Ollama Cloud API (https://ollama.com), ensure API key is present
+    if "ollama.com" in OLLAMA_BASE_URL.lower() and not OLLAMA_API_KEY.strip():
+        raise RuntimeError(
+            "OLLAMA_API_KEY is not set. Ollama Cloud (https://ollama.com) requires an API key in .env.\n"
+            "Please add OLLAMA_API_KEY=your_key to your .env file."
+        )
+
+    # Ensure projects root directory exists and is writable
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+

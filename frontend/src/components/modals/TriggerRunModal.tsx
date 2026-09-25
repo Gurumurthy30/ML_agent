@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { X, Play, AlertCircle, Loader2 } from "lucide-react";
 import { useUIStore } from "../../store/uiStore";
 import { api } from "../../services/api";
@@ -22,10 +22,21 @@ export function TriggerRunModal({ projectId, datasets, onTriggered }: TriggerRun
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (datasets.length > 0 && !datasets.some((d) => d.version === datasetVersion)) {
+      setDatasetVersion(datasets[0].version);
+    }
+  }, [datasets, datasetVersion]);
+
   if (!isTriggerRunOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (datasets.length === 0) {
+      setError("No datasets available. Please upload a dataset in the Dataset tab first.");
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -140,7 +151,7 @@ export function TriggerRunModal({ projectId, datasets, onTriggered }: TriggerRun
             </button>
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || datasets.length === 0}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold transition disabled:opacity-50"
             >
               {isLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}

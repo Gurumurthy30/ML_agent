@@ -81,23 +81,41 @@ class MLflowTools:
 
         for r in runs:
             m_val = r.data.metrics.get(target_metric)
+            tags = r.data.tags or {}
+            
+            # calculate training duration if available
+            duration = None
+            if r.info.start_time and r.info.end_time:
+                duration = max(0.0, (r.info.end_time - r.info.start_time) / 1000.0)
+
+            model_name = tags.get("mlflow.runName") or r.info.run_name or r.info.run_id
+
             leaderboard.append({
                 "run_id": r.info.run_id,
                 "run_name": r.info.run_name,
+                "model_name": model_name,
+                "model_type": tags.get("model_family"),
+                "experiment_id": self.experiment_id,
                 "status": r.info.status,
                 "target_metric": target_metric,
                 "metric_value": m_val,
+                "score": m_val,
+                "feature_version": tags.get("feature_version", "feat_v1"),
+                "dataset_version": tags.get("dataset_version", "dataset_v1"),
+                "duration_seconds": duration,
                 "metrics": r.data.metrics,
                 "params": r.data.params,
-                "tags": r.data.tags,
+                "tags": tags,
+                "artifact_uri": r.info.artifact_uri,
                 "start_time": r.info.start_time,
             })
 
-        # Sort runs: valid numbers first, followed by None/missing
+        # Sort runs: valid numbers first (ranked per direction), followed by None/missing always at bottom
         def sort_key(item: dict[str, Any]):
-            val = item["metric_value"]
+            val = item["score"]
             if val is None:
-                return float("-inf") if higher_better else float("inf")
+                # With reverse=True, -inf always places None/missing runs at the very bottom
+                return float("-inf")
             return val if higher_better else -val
 
         leaderboard.sort(key=sort_key, reverse=True)

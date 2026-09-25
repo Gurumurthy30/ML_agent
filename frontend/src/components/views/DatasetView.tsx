@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Database, Upload, Search, FileSpreadsheet, Loader2 } from "lucide-react";
+import { Database, Upload, Search, Loader2, AlertCircle } from "lucide-react";
 import { Dataset, DatasetPreview } from "../../types";
 import { api } from "../../services/api";
 
@@ -18,6 +18,7 @@ export function DatasetView({ projectId, datasets, onUploadSuccess }: DatasetVie
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const pageSize = 25;
 
   useEffect(() => {
@@ -27,23 +28,30 @@ export function DatasetView({ projectId, datasets, onUploadSuccess }: DatasetVie
   }, [datasets, selectedVersion]);
 
   useEffect(() => {
-    if (!selectedVersion) return;
+    if (!selectedVersion || datasets.length === 0) return;
     setIsLoading(true);
     api
       .previewDataset(projectId, selectedVersion)
       .then((data) => setPreview(data))
       .catch(() => setPreview(null))
       .finally(() => setIsLoading(false));
-  }, [projectId, selectedVersion]);
+  }, [projectId, selectedVersion, datasets.length]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      if (!file.name.toLowerCase().endsWith(".csv")) {
+        setUploadError("Only tabular .csv files are supported.");
+        return;
+      }
+
       setIsUploading(true);
+      setUploadError(null);
       try {
-        await api.uploadDataset(projectId, e.target.files[0]);
+        await api.uploadDataset(projectId, file);
         if (onUploadSuccess) onUploadSuccess();
       } catch (err: any) {
-        alert(`Failed to upload dataset: ${err.message}`);
+        setUploadError(err.message || "Failed to upload dataset.");
       } finally {
         setIsUploading(false);
       }
@@ -96,6 +104,28 @@ export function DatasetView({ projectId, datasets, onUploadSuccess }: DatasetVie
         </div>
       </div>
 
+      {uploadError && (
+        <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg flex items-center gap-2 text-xs font-mono text-rose-300">
+          <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+          <span>{uploadError}</span>
+        </div>
+      )}
+
+      {datasets.length === 0 && (
+        <div className="p-12 border border-slate-800 rounded-xl bg-slate-900/30 text-center space-y-3">
+          <Database className="w-8 h-8 text-slate-600 mx-auto" />
+          <div className="text-xs text-slate-300 font-medium">No datasets uploaded yet</div>
+          <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
+            Upload a tabular CSV file to initialize dataset_v1 and begin automated exploration.
+          </p>
+          <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-semibold cursor-pointer transition">
+            {isUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+            <span>Upload First Dataset</span>
+            <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
+          </label>
+        </div>
+      )}
+
       {/* Dataset Summary Cards */}
       {currentDataset && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono">
@@ -119,21 +149,22 @@ export function DatasetView({ projectId, datasets, onUploadSuccess }: DatasetVie
       )}
 
       {/* Table Preview */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" />
-            <input
-              type="text"
-              placeholder="Search table preview..."
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage(0);
-              }}
-              className="w-full pl-8 pr-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500 font-mono"
-            />
-          </div>
+      {datasets.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                placeholder="Search table preview..."
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(0);
+                }}
+                className="w-full pl-8 pr-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500 font-mono"
+              />
+            </div>
 
           {preview && (
             <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
@@ -198,6 +229,7 @@ export function DatasetView({ projectId, datasets, onUploadSuccess }: DatasetVie
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

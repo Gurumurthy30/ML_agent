@@ -1,5 +1,4 @@
-import { useNavigate } from "react-router-dom";
-import { History, Play, ArrowRight, Clock, AlertCircle } from "lucide-react";
+import { History, Play, ArrowRight } from "lucide-react";
 import { WorkflowRun } from "../../types";
 import { StatusBadge } from "../common/Badge";
 import { useUIStore } from "../../store/uiStore";
@@ -11,7 +10,6 @@ interface RunsViewProps {
 }
 
 export function RunsView({ projectId, runs, onTriggerNewRun }: RunsViewProps) {
-  const navigate = useNavigate();
   const { setActiveRunId, setActiveTab } = useUIStore();
 
   const handleSelectRun = (runId: string) => {

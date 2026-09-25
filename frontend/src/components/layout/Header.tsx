@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "react-router-dom";
-import { FolderGit2, Play, PanelRightClose, PanelRightOpen, Cpu } from "lucide-react";
+import { FolderGit2, Play, PanelRightClose, PanelRightOpen, Cpu, RotateCw } from "lucide-react";
 import { useUIStore } from "../../store/uiStore";
 import { Project, WorkflowRun } from "../../types";
 import { StatusBadge } from "../common/Badge";
@@ -7,9 +7,11 @@ import { StatusBadge } from "../common/Badge";
 interface HeaderProps {
   project?: Project;
   activeRun?: WorkflowRun;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
 }
 
-export function Header({ project, activeRun }: HeaderProps) {
+export function Header({ project, activeRun, onRefresh, isRefreshing }: HeaderProps) {
   const navigate = useNavigate();
   const { isArtifactsPanelOpen, toggleArtifactsPanel, setIsTriggerRunOpen } = useUIStore();
 
@@ -48,6 +50,17 @@ export function Header({ project, activeRun }: HeaderProps) {
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2.5">
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-slate-800 hover:bg-slate-800/80 text-slate-300 hover:text-slate-100 text-xs transition"
+            title="Refresh All Data"
+          >
+            <RotateCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-sky-400" : ""}`} />
+            <span className="hidden sm:inline">Refresh</span>
+          </button>
+        )}
+
         {project && (
           <button
             onClick={() => setIsTriggerRunOpen(true)}

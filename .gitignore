@@ -1,83 +1,74 @@
-# ─── Python ───────────────────────────────────────────────────────────────────
+# Python
 __pycache__/
 *.py[cod]
+*.pyc
 *.pyo
 *.pyd
-*.so
-*.egg
 *.egg-info/
 .eggs/
 dist/
 build/
 wheels/
-sdist/
+*.egg
 .installed.cfg
 .Python
 
-# ─── Virtual environments ──────────────────────────────────────────────────────
+# Virtual environments
 .venv/
 venv/
 env/
 ENV/
 
-# ─── Environment variables ─────────────────────────────────────────────────────
+# Environment / secrets
 .env
+.env.*
 .env.local
+!.env.example
 
-# ─── Testing & coverage ────────────────────────────────────────────────────────
+# Frontend & Node
+node_modules/
+dist/
+.vite/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+.oxlintcache
+
+# MLflow
+mlruns/
+mlflow.db
+mlflow.db*
+
+# App Database & SQLite
+*.db
+*.db*
+*.sqlite
+*.sqlite3
+app_metadata.db*
+
+# Generated project data (keep directory structure, exclude generated contents)
+projects/*/
+!projects/.gitkeep
+
+# Testing & coverage
 .pytest_cache/
 .coverage
 .coverage.*
 htmlcov/
 coverage.xml
-*.cover
-.tox/
-.nox/
-.hypothesis/
 
-# ─── IDE & OS ─────────────────────────────────────────────────────────────────
+# IDE & OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
-# ─── Runtime logs & events ────────────────────────────────────────────────────
-logs/
-logs_smoke/
+# Logs & runtime events
 *.log
+logs/
 *.events.jsonl
 
-# ─── Agent runtime artifacts ──────────────────────────────────────────────────
-artifacts/
-runs/
-checkpoints.db*
-runs_index.db*
-scratch/
-memory/store/*.jsonl
-smoke_data/
-
-# ─── Data files & Local Databases ─────────────────────────────────────────────
-data/
-projects/
-mlruns/
-mlflow.db*
-app_metadata.db*
-
-# ─── Frontend ─────────────────────────────────────────────────────────────────
-node_modules/
-frontend/node_modules/
-frontend/dist/
-*.tsbuildinfo
-.oxlintcache
-
-# ─── Notebooks ────────────────────────────────────────────────────────────────
-Notebook/
-
-# ─── Personal review notes ────────────────────────────────────────────────────
-review/
-
-# ─── Misc build artifacts ─────────────────────────────────────────────────────
-*.manifest
-*.spec
-pip-log.txt
-pip-delete-this-directory.txt
+# documents
+docs/AUDIT_REPORT.MD
+docs/CLEAR.MD

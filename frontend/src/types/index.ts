@@ -36,9 +36,11 @@ export interface WorkflowRun {
 export interface ArtifactIndex {
   id: string;
   project_id: string;
-  stage: string;
+  stage?: string;
   artifact_type: string;
-  file_path: string;
+  path?: string;
+  file_path?: string;
+  version?: string;
   summary?: string;
   created_at: string;
 }
@@ -96,7 +98,8 @@ export interface LeaderboardItem {
   model_name?: string;
   model_type?: string;
   target_metric: string;
-  score: number;
+  score?: number | null;
+  metric_value?: number | null;
   dataset_version: string;
   feature_version?: string;
   duration_seconds?: number;

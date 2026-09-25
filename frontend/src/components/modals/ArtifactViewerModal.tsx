@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { X, Copy, Check, FileText, Download } from "lucide-react";
+import { X, Copy, Check, FileText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useUIStore } from "../../store/uiStore";
@@ -36,7 +36,8 @@ export function ArtifactViewerModal({ projectId }: ArtifactViewerModalProps) {
 
   if (!viewingArtifact) return null;
 
-  const filename = viewingArtifact.file_path.split(/[\\/]/).pop() || viewingArtifact.id;
+  const filePath = viewingArtifact.file_path || viewingArtifact.path || "";
+  const filename = filePath.split(/[\\/]/).pop() || viewingArtifact.id;
 
   const handleCopy = () => {
     let textToCopy = "";

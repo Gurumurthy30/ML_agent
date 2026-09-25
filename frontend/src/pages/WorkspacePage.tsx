@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
-import { useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect, useCallback } from "react";
+import { useParams, Link } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { FolderGit2 } from "lucide-react";
 import { Header } from "../components/layout/Header";
 import { ProjectNav } from "../components/layout/ProjectNav";
 import { ArtifactsPanel } from "../components/layout/ArtifactsPanel";
@@ -22,41 +23,61 @@ import { useSSE } from "../hooks/useSSE";
 
 export function WorkspacePage() {
   const { id: projectId = "" } = useParams<{ id: string }>();
+  const queryClient = useQueryClient();
   const { activeTab, setActiveTab, activeRunId, setActiveRunId, setIsTriggerRunOpen } = useUIStore();
   const [selectedMetric, setSelectedMetric] = useState<string>("f1");
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
+
+  const invalidateAllProjectQueries = useCallback(() => {
+    setIsManualRefreshing(true);
+    queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["datasets", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["runs", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["leaderboard", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["evaluation", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["report", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["artifact-content", projectId] });
+    setTimeout(() => setIsManualRefreshing(false), 500);
+  }, [queryClient, projectId]);
 
   // 1. Fetch Project Details
-  const { data: project } = useQuery({
+  const {
+    data: project,
+    isLoading: isProjectLoading,
+    isError: isProjectError,
+    error: projectError,
+  } = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId),
     enabled: Boolean(projectId),
   });
 
   // 2. Fetch Datasets
-  const { data: datasets = [], refetch: refetchDatasets } = useQuery({
+  const { data: datasets = [] } = useQuery({
     queryKey: ["datasets", projectId],
     queryFn: () => api.getDatasets(projectId),
     enabled: Boolean(projectId),
   });
 
-  // 3. Fetch Runs
-  const { data: runs = [], refetch: refetchRuns } = useQuery({
+  // 3. Fetch Runs (periodic refresh during run cycles)
+  const { data: runs = [] } = useQuery({
     queryKey: ["runs", projectId],
     queryFn: () => api.getRuns(projectId),
+    enabled: Boolean(projectId),
+    refetchInterval: 3000,
+  });
+
+  // 4. Fetch Artifacts
+  const { data: artifacts = [], isLoading: isArtifactsLoading } = useQuery({
+    queryKey: ["artifacts", projectId],
+    queryFn: () => api.getArtifacts(projectId),
     enabled: Boolean(projectId),
     refetchInterval: 4000,
   });
 
-  // 4. Fetch Artifacts
-  const { data: artifacts = [], isLoading: isArtifactsLoading, refetch: refetchArtifacts } = useQuery({
-    queryKey: ["artifacts", projectId],
-    queryFn: () => api.getArtifacts(projectId),
-    enabled: Boolean(projectId),
-    refetchInterval: 6000,
-  });
-
   // 5. Fetch Leaderboard
-  const { data: leaderboardData, isLoading: isLeaderboardLoading, refetch: refetchLeaderboard } = useQuery({
+  const { data: leaderboardData, isLoading: isLeaderboardLoading } = useQuery({
     queryKey: ["leaderboard", projectId, selectedMetric],
     queryFn: () => api.getLeaderboard(projectId, selectedMetric),
     enabled: Boolean(projectId),
@@ -69,19 +90,15 @@ export function WorkspacePage() {
     }
   }, [runs, activeRunId, setActiveRunId]);
 
-  const activeRun = runs.find((r) => r.id === activeRunId) || (runs.length > 0 ? runs[0] : undefined);
+  const currentRunId = activeRunId || (runs.length > 0 ? runs[0].id : undefined);
+  const activeRun = runs.find((r) => r.id === currentRunId);
 
-  // Hook into live SSE events for active run
-  const { events, isConnected, isCompleted } = useSSE(projectId, activeRun?.id);
-
-  // Auto-refresh queries when a run completes
-  useEffect(() => {
-    if (isCompleted) {
-      refetchRuns();
-      refetchArtifacts();
-      refetchLeaderboard();
-    }
-  }, [isCompleted, refetchRuns, refetchArtifacts, refetchLeaderboard]);
+  // Hook into live SSE events for active run; automatically invalidate all queries when complete
+  const { events, isConnected, isCompleted, error: sseError } = useSSE(
+    projectId,
+    currentRunId,
+    invalidateAllProjectQueries
+  );
 
   const handleStageSelect = (stageKey: string) => {
     switch (stageKey) {
@@ -112,10 +129,43 @@ export function WorkspacePage() {
     }
   };
 
+  if (isProjectLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-[#090d16] text-slate-400 font-mono text-xs animate-pulse">
+        Loading project workspace...
+      </div>
+    );
+  }
+
+  if (isProjectError || (!project && !isProjectLoading)) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-[#090d16] text-slate-300 font-sans space-y-4 p-6">
+        <div className="w-12 h-12 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400">
+          <FolderGit2 className="w-6 h-6" />
+        </div>
+        <div className="text-base font-semibold text-slate-100">Project Not Found</div>
+        <p className="text-xs text-slate-400 font-mono max-w-sm text-center">
+          {(projectError as any)?.message || `Project '${projectId}' does not exist or failed to load.`}
+        </p>
+        <Link
+          to="/"
+          className="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs transition shadow-md shadow-sky-500/10"
+        >
+          Return to Projects
+        </Link>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-[#090d16] font-sans text-slate-100">
       {/* Top Header */}
-      <Header project={project} activeRun={activeRun} />
+      <Header
+        project={project}
+        activeRun={activeRun}
+        onRefresh={invalidateAllProjectQueries}
+        isRefreshing={isManualRefreshing}
+      />
 
       {/* Main Three-Pane Body */}
       <div className="flex flex-1 overflow-hidden">
@@ -134,6 +184,7 @@ export function WorkspacePage() {
               activeRun={activeRun}
               isConnected={isConnected}
               isCompleted={isCompleted}
+              error={sseError}
               onSelectStage={handleStageSelect}
             />
           )}
@@ -142,10 +193,7 @@ export function WorkspacePage() {
             <DatasetView
               projectId={projectId}
               datasets={datasets}
-              onUploadSuccess={() => {
-                refetchDatasets();
-                refetchArtifacts();
-              }}
+              onUploadSuccess={invalidateAllProjectQueries}
             />
           )}
 
@@ -183,14 +231,14 @@ export function WorkspacePage() {
 
       {/* Modals */}
       <ArtifactViewerModal projectId={projectId} />
-      <ModelDetailModal />
+      <ModelDetailModal projectId={projectId} />
       <TriggerRunModal
         projectId={projectId}
         datasets={datasets}
         onTriggered={(newRunId) => {
           setActiveRunId(newRunId);
           setActiveTab("overview");
-          refetchRuns();
+          invalidateAllProjectQueries();
         }}
       />
     </div>
