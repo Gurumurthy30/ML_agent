@@ -115,6 +115,27 @@ def execute_workflow_sync(project_id: str, run_id: str, dataset_version: str, ta
                 curr_stage = node_state.get("current_stage", node_name)
                 iteration_idx = node_state.get("iteration", 1)
 
+                if node_state.get("status") == "FAILED":
+                    error_msg = node_state.get("error", f"Stage '{node_name}' failed.")
+                    with Session(engine) as session:
+                        run_record = session.get(WorkflowRun, run_id)
+                        if run_record:
+                            run_record.status = "FAILED"
+                            run_record.error = error_msg
+                            run_record.completed_at = datetime.now(timezone.utc)
+                            session.add(run_record)
+                            session.commit()
+
+                    event_manager.emit_event(
+                        project_id=project_id,
+                        run_id=run_id,
+                        event_type="WORKFLOW_COMPLETED",
+                        stage=node_name,
+                        message=f"Workflow failed at stage '{node_name}': {error_msg}",
+                        data={"status": "FAILED", "error": error_msg},
+                    )
+                    return
+
                 if node_name == "supervisor":
                     next_act = node_state.get("next_action")
                     event_manager.emit_event(

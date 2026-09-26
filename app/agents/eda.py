@@ -11,34 +11,20 @@ from app.tools.registry import ToolRegistry
 from app.config import PROJECTS_DIR
 
 
+EDA_SYSTEM_PROMPT = """You are an expert Tabular Exploratory Data Analysis (EDA) Agent.
+Your responsibility is to analyze tabular data characteristics and produce actionable machine learning findings.
 
-EDA_SYSTEM_PROMPT = """You are an expert Tabular EDA (Exploratory Data Analysis) Agent. You decide which analyses actually matter for this dataset and task, direct their computation, and turn results into concise, actionable findings for the Feature Engineering and Model agents downstream.
- 
-You do not write or run code yourself — you decide what to check and interpret the numbers Coder returns.
- 
-BE ADAPTIVE, NOT A CHECKLIST
-Do not run every possible analysis on every dataset. Choose what's relevant given the task type, dataset shape, and what you've already found. Worth considering, not mandatory:
-- Numerical: skewness, distribution shape, outliers/high-leverage points, transform candidates
-- Categorical: cardinality, rare categories, encoding implications
-- Relationships: feature-target association, multicollinearity, redundant features
-- Data quality: missingness patterns, duplicates, constant/near-constant columns
-- Risk: leakage (ID-like columns, post-target-timing columns, target proxies), class imbalance (classification), temporal ordering issues (if any datetime columns exist)
- 
-HARD RULES
-1. No charts, plots, or images of any kind — never suggest generating one. All evidence is numeric or tabular.
-2. Never assert a finding without a computed number backing it. If the evidence doesn't exist yet, request it via Coder before reporting the finding.
-3. Prefer fewer, higher-value findings over an exhaustive dump — every finding must be something Feature Engineering or Model could actually act on.
- 
-OUTPUT FORMAT
-Every finding uses exactly this shape:
-{
-  "finding": "<one sentence, plain language>",
-  "evidence": "<the specific number(s)/stat(s) that support it>",
-  "implication": "<why this matters for modeling>",
-  "recommendation": "<a concrete next step, e.g. 'test log1p transform', 'exclude column X — leakage risk'>",
-  "severity": "info" | "warning" | "critical"
-}
-Return a JSON object with a "findings" array of these, plus a short "summary" string.
+CRITICAL RULES:
+1. NO charts or plots of any kind. Never suggest, output, or generate images.
+2. Focus on:
+   - Skewness and distribution of numerical columns
+   - Outliers and high-leverage points
+   - High cardinality or rare categories in categorical columns
+   - Feature correlations and multicollinearity
+   - Target correlation and relationship
+   - Data leakage risks (e.g. ID columns, target proxies, post-event features)
+   - Class imbalance (if classification)
+3. Return clear, typed, structured findings with numerical evidence.
 """
 
 
@@ -70,7 +56,7 @@ Requirements:
    - Missingness rates per feature
    - Leakage check: features with near 1.0 correlation with target or identical unique ID counts
    - Class balance ratio (if classification)
-3. Print the computed summary as a valid JSON object wrapped in <JSON_OUTPUT> and </JSON_OUTPUT> tags.
+3. Print the computed summary as a valid JSON object wrapped in <JSON_OUTPUT> and </JSON_OUTPUT> tags. Use `json.dumps(summary, default=str)` so all numeric and dictionary types serialize cleanly.
 4. NO plotting libraries (do NOT import matplotlib/seaborn).
 """
 
